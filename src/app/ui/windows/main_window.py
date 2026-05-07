@@ -1,13 +1,17 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from base64 import b64encode
 from io import BytesIO
 from math import atan, ceil, cos, pi, sin, sqrt, tan
 from pathlib import Path
+from shutil import copy2
 
-from PySide6.QtCore import QStandardPaths
-from PySide6.QtGui import QTextCursor, QTextDocument
+from PySide6.QtCore import QStandardPaths, Qt
+from PySide6.QtGui import QAction, QIcon, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QApplication,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -15,14 +19,25 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QMenu,
+    QMessageBox,
+    QComboBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
+    QSlider,
+    QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -49,6 +64,11 @@ from app.services.calculations.psb_blocking_settings import (
     PsbLoadCutInput,
     PsbStageSettingInput,
     psb_blocking_settings,
+)
+from app.services.calculations.phs_selector_settings import (
+    PhsSelectorResult,
+    PhsStageInput,
+    phs_selector_settings,
 )
 from app.ui.dialogs.project_manager_dialog import ProjectManagerDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
@@ -87,9 +107,18 @@ class MainWindow(QMainWindow):
         self._distance_phase_ground_zone_visibility: dict[str, bool] = {}
         self._distance_phase_ground_point_targets: list[tuple[str, float, float]] = []
         self._last_psb_blocking_result: PsbBlockingResult | None = None
-        self._show_point_labels = True
+        self._last_phs_result: PhsSelectorResult | None = None
+        self._show_point_labels = False
+        self._results_locked = False
+        self._psd_calculated = False
+        self._phs_calculated = False
+        self._input_tab_index = 0
+        self._distance_tab_index = 1
+        self._psd_tab_index = 2
+        self._phs_tab_index = 3
+        self._journal_tab_index = 4
 
-        database_path = self._default_data_dir() / "rel_psd.sqlite"
+        database_path = self._database_path()
         engine = create_sqlite_engine(database_path)
         initialize_database(engine)
         self._session_factory = create_session_factory(engine)
@@ -98,37 +127,75 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_example_data()
         self._retranslate()
+        self._apply_pointer_cursors()
+        self._update_result_tab_state()
 
     def _default_data_dir(self) -> Path:
         path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
         return Path(path) if path else Path.cwd() / ".rel_psd"
 
+    def _database_path(self) -> Path:
+        current_dir = self._default_data_dir()
+        current_dir.mkdir(parents=True, exist_ok=True)
+        current_path = current_dir / "rel_psd.sqlite"
+        legacy_path = current_dir.parent / "REL-PSD" / "rel_psd.sqlite"
+        if legacy_path.exists() and not self._database_has_content(current_path):
+            copy2(legacy_path, current_path)
+            legacy_path.unlink()
+        return current_path
+
+    def _database_has_content(self, path: Path) -> bool:
+        return path.exists() and path.stat().st_size > 8192
+
     def _build_actions(self) -> None:
         self.file_menu = self.menuBar().addMenu("")
         self.new_action = self.file_menu.addAction("")
         self.save_action = self.file_menu.addAction("")
+        self.save_as_action = self.file_menu.addAction("")
         self.open_action = self.file_menu.addAction("")
         self.export_action = self.file_menu.addAction("")
         self.file_menu.addSeparator()
         self.exit_action = self.file_menu.addAction("")
 
-        self.settings_menu = self.menuBar().addMenu("")
-        self.language_action = self.settings_menu.addAction("")
+        self.settings_action = self.menuBar().addAction("")
+        self.help_action = self.menuBar().addAction("")
 
         self.save_action.triggered.connect(self._save_project)
+        self.save_as_action.triggered.connect(self._save_project_as)
         self.new_action.triggered.connect(self._new_project)
         self.open_action.triggered.connect(self._open_latest_project)
         self.export_action.triggered.connect(self._export_rx_diagram)
         self.exit_action.triggered.connect(self.close)
-        self.language_action.triggered.connect(self._open_settings)
+        self.settings_action.triggered.connect(self._open_settings)
+        self.help_action.triggered.connect(self._open_help)
 
     def _build_ui(self) -> None:
+        icon_path = Path(__file__).resolve().parents[4] / "resources" / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.project_name = QLineEdit()
         self.author = QLineEdit()
         self.source_data_widget = SourceDataWidget(self._translator)
 
-        self.calculate_button = QPushButton()
-        self.calculate_button.clicked.connect(self._calculate)
+        self.calculate_button = QToolButton()
+        self.calculate_button.setObjectName("calculateButton")
+        self.calculate_button.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+        self.calculate_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.calculate_button.clicked.connect(self._calculate_all)
+        self.clear_results_button = QPushButton()
+        self.clear_results_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.clear_results_button.setEnabled(False)
+        self.clear_results_button.clicked.connect(self._confirm_clear_results)
+        self.validation_message = QLabel()
+        self.validation_message.setObjectName("validationMessage")
+        self.validation_message.setWordWrap(True)
+        self.validation_message.hide()
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
 
@@ -149,6 +216,12 @@ class MainWindow(QMainWindow):
         self.psd_report_find_prev_button.clicked.connect(self._find_psd_report_previous)
         self.export_psd_report_button = QPushButton()
         self.export_psd_report_button.clicked.connect(self._export_psd_report_docx)
+        self.psd_report_zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.psd_report_zoom_slider.setRange(80, 160)
+        self.psd_report_zoom_slider.setValue(100)
+        self.psd_report_zoom_slider.valueChanged.connect(
+            lambda value: self._set_report_zoom(self.psd_report_text, value)
+        )
         self.export_psd_settings_button = QPushButton()
         self.export_psd_settings_button.clicked.connect(self._export_psd_settings_docx)
         self.export_psd_phase_phase_graph_button = QPushButton()
@@ -167,6 +240,16 @@ class MainWindow(QMainWindow):
         self.export_distance_phase_ground_graph_button.clicked.connect(
             lambda: self._export_graph_panel(self.distance_phase_ground_panel, "distance_phase_ground")
         )
+        self.export_phs_settings_button = QPushButton()
+        self.export_phs_settings_button.clicked.connect(self._export_phs_settings_docx)
+        self.export_phs_report_button = QPushButton()
+        self.export_phs_report_button.clicked.connect(self._export_phs_report_docx)
+        self.phs_report_zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.phs_report_zoom_slider.setRange(80, 160)
+        self.phs_report_zoom_slider.setValue(100)
+        self.phs_report_zoom_slider.valueChanged.connect(
+            lambda value: self._set_report_zoom(self.phs_report_tab, value)
+        )
         self.source_data_widget.protection_type_combo.currentIndexChanged.connect(
             self._update_psd_phase_ground_tab
         )
@@ -178,11 +261,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_input_tab(), "")
         self.tabs.addTab(self._build_distance_zones_tab(), "")
         self.tabs.addTab(self._build_psd_tab(), "")
+        self.tabs.addTab(self._build_phs_tab(), "")
         self.tabs.addTab(self.report_text, "")
         self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("")
-        self.psd_tabs.currentChanged.connect(self._on_psd_tab_changed)
-        self.distance_tabs.currentChanged.connect(self._on_distance_tab_changed)
+        self.tabs.currentChanged.connect(self._guard_result_tabs)
 
     def _build_input_tab(self) -> QWidget:
         page = QWidget()
@@ -213,14 +296,54 @@ class MainWindow(QMainWindow):
         right_scroll.setWidget(right_scroll_content)
 
         right_layout.addWidget(right_scroll)
+        right_layout.addWidget(self.validation_message)
         right_layout.addSpacing(30)
         right_layout.addWidget(self.calculate_button)
+        right_layout.addWidget(self.clear_results_button)
 
         splitter.addWidget(left)
         splitter.addWidget(right)
         splitter.setSizes([760, 420])
         root.addWidget(splitter)
         return page
+
+    def _sync_calculate_menu_width(self) -> None:
+        return
+
+    def _guard_result_tabs(self, index: int) -> None:
+        if not self.tabs.isTabVisible(index):
+            self.tabs.blockSignals(True)
+            self.tabs.setCurrentIndex(self._input_tab_index)
+            self.tabs.blockSignals(False)
+            return
+        if (
+            self._last_result is None
+            and index not in {self._input_tab_index, self._journal_tab_index}
+        ):
+            self.tabs.blockSignals(True)
+            self.tabs.setCurrentIndex(self._input_tab_index)
+            self.tabs.blockSignals(False)
+            self.statusBar().showMessage(self._translator.text("message.calculate_first"), 5000)
+            return
+        if index == self._distance_tab_index:
+            self._update_distance_phase_ground_tab()
+            stack = getattr(self.distance_tabs, "_rel_psd_stack", None)
+            if isinstance(stack, QStackedWidget):
+                current = stack.currentWidget()
+                if current is self.distance_phase_ground_tab:
+                    self._plot_distance_phase_ground_zones()
+                else:
+                    self._plot_distance_phase_phase_zones()
+
+    def _apply_pointer_cursors(self) -> None:
+        interactive_widgets = [
+            *self.findChildren(QAbstractButton),
+            *self.findChildren(QComboBox),
+        ]
+        for widget in interactive_widgets:
+            widget.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tabs.tabBar().setCursor(Qt.CursorShape.PointingHandCursor)
+        self.menuBar().setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _project_group(self) -> QGroupBox:
         self.project_group = QGroupBox()
@@ -232,44 +355,194 @@ class MainWindow(QMainWindow):
         return self.project_group
 
     def _build_psd_tab(self) -> QWidget:
-        self.psd_tabs = QTabWidget()
         self.psd_settings_tab = self._build_psd_settings_tab()
         self.psd_phase_phase_tab = self._build_psd_phase_phase_tab()
         self.psd_phase_ground_tab = self._build_psd_phase_ground_tab()
-        self.psd_tabs.addTab(self.psd_settings_tab, "")
-        self.psd_tabs.addTab(self.psd_phase_phase_tab, "")
-        self.psd_tabs.addTab(self.psd_phase_ground_tab, "")
         self.psd_report_tab = self._build_psd_report_tab()
-        self.psd_tabs.addTab(self.psd_report_tab, "")
+        self.psd_tabs = self._segmented_module(
+            "PSD",
+            [
+                ("psd.settings", self.psd_settings_tab),
+                ("psd.phase_phase_graph", self.psd_phase_phase_tab),
+                ("psd.phase_ground_graph", self.psd_phase_ground_tab),
+                ("psd.report", self.psd_report_tab),
+            ],
+            self._on_psd_tab_changed,
+        )
         self._update_psd_phase_ground_tab()
         return self.psd_tabs
+
+    def _build_phs_tab(self) -> QWidget:
+        self.phs_settings_tab = self._phs_settings_table()
+        self.phs_phase_phase_2ph_panel = MatplotlibPanel()
+        self.phs_phase_phase_3ph_panel = MatplotlibPanel()
+        self.phs_phase_ground_panel = MatplotlibPanel()
+        self.phs_load_cut_panel = MatplotlibPanel()
+        self.phs_report_tab = QTextEdit()
+        self.phs_report_tab.setReadOnly(True)
+        self.phs_report_tab.setPlainText("PHS: розрахунок буде додано на наступному етапі.")
+        self.phs_tabs = self._segmented_module(
+            "PHS",
+            [
+                ("psd.settings", self._build_phs_settings_tab()),
+                ("phs.phase_phase_2ph", self._build_phs_graph_tab(self.phs_phase_phase_2ph_panel)),
+                ("phs.phase_phase_3ph", self._build_phs_graph_tab(self.phs_phase_phase_3ph_panel)),
+                ("phs.phase_ground", self._build_phs_graph_tab(self.phs_phase_ground_panel)),
+                ("phs.load_cut", self._build_phs_graph_tab(self.phs_load_cut_panel)),
+                ("psd.report", self._build_phs_report_tab()),
+            ],
+            None,
+        )
+        return self.phs_tabs
+
+    def _build_phs_settings_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        toolbar.addStretch()
+        toolbar.addWidget(self.export_phs_settings_button)
+        layout.addLayout(toolbar)
+        layout.addWidget(self.phs_settings_tab)
+        return page
+
+    def _build_phs_graph_tab(self, panel: MatplotlibPanel) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        toolbar.addStretch()
+        export_button = QPushButton(self._translator.text("button.export_graph"))
+        export_button.clicked.connect(
+            lambda checked=False, target=panel: self._export_graph_panel(target, "phs_graph")
+        )
+        toolbar.addWidget(export_button)
+        layout.addLayout(toolbar)
+        layout.addWidget(panel)
+        return page
+
+    def _build_phs_report_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.phs_report_tab)
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        footer.addWidget(self.export_phs_report_button)
+        footer.addStretch()
+        footer.addWidget(QLabel(self._translator.text("report.zoom")))
+        footer.addWidget(self.phs_report_zoom_slider)
+        layout.addLayout(footer)
+        return page
+
+    def _phs_settings_table(self) -> QTableWidget:
+        table = QTableWidget()
+        rows = [
+            ("INBlockPP", self._translator.text("unit.ampere")),
+            ("INBlockPE", self._translator.text("unit.ampere")),
+            ("RLd Fw", self._translator.text("unit.ohm")),
+            ("RLd Rv", self._translator.text("unit.ohm")),
+            ("ArgLd", self._translator.text("unit.degree")),
+            ("X1", self._translator.text("unit.ohm")),
+            ("X0", self._translator.text("unit.ohm")),
+            ("RFFwPP", self._translator.text("unit.ohm")),
+            ("RFRvPP", self._translator.text("unit.ohm")),
+            ("RFFw PE", self._translator.text("unit.ohm")),
+            ("RFRv PE", self._translator.text("unit.ohm")),
+        ]
+        table.setRowCount(len(rows))
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(
+            [
+                self._translator.text("table.name"),
+                self._translator.text("report.psd_setting_value"),
+                self._translator.text("psd.unit").capitalize(),
+            ]
+        )
+        table.verticalHeader().setVisible(False)
+        for row, (name, unit) in enumerate(rows):
+            table.setItem(row, 0, self._table_item(name))
+            table.setItem(row, 1, self._table_item(""))
+            table.setItem(row, 2, self._table_item(unit))
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        return table
 
     def _build_psd_report_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         controls = QHBoxLayout()
+        controls.setSpacing(10)
         controls.addWidget(self.psd_report_search)
         controls.addWidget(self.psd_report_find_prev_button)
         controls.addWidget(self.psd_report_find_next_button)
         controls.addStretch()
-        controls.addWidget(self.export_psd_report_button)
         layout.addLayout(controls)
         layout.addWidget(self.psd_report_text)
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        footer.addWidget(self.export_psd_report_button)
+        footer.addStretch()
+        footer.addWidget(QLabel(self._translator.text("report.zoom")))
+        footer.addWidget(self.psd_report_zoom_slider)
+        layout.addLayout(footer)
         return page
 
     def _build_distance_zones_tab(self) -> QWidget:
-        self.distance_tabs = QTabWidget()
         self.distance_phase_phase_tab = self._build_distance_phase_phase_tab()
         self.distance_phase_ground_tab = self._build_distance_phase_ground_tab()
-        self.distance_tabs.addTab(self.distance_phase_phase_tab, "")
-        self.distance_tabs.addTab(self.distance_phase_ground_tab, "")
+        self.distance_tabs = self._segmented_module(
+            "Дистанційні зони",
+            [
+                ("distance.phase_phase_graph", self.distance_phase_phase_tab),
+                ("distance.phase_ground_graph", self.distance_phase_ground_tab),
+            ],
+            self._on_distance_tab_changed,
+        )
         self._update_distance_phase_ground_tab()
         return self.distance_tabs
+
+    def _segmented_module(
+        self,
+        title: str,
+        pages: list[tuple[str, QWidget]],
+        callback: object | None,
+    ) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        segmented = QWidget()
+        segmented.setObjectName("segmentedControl")
+        segmented_layout = QHBoxLayout(segmented)
+        segmented_layout.setContentsMargins(0, 0, 0, 10)
+        segmented_layout.setSpacing(10)
+        stack = QStackedWidget()
+        buttons: list[QPushButton] = []
+        for index, (key, widget) in enumerate(pages):
+            button = QPushButton()
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setProperty("translation_key", key)
+            button.clicked.connect(lambda checked=False, i=index: self._select_segment(stack, i, callback))
+            segmented_layout.addWidget(button)
+            stack.addWidget(widget)
+            buttons.append(button)
+        if buttons:
+            buttons[0].setChecked(True)
+        segmented_layout.addStretch()
+        layout.addWidget(segmented)
+        layout.addWidget(stack)
+        page._rel_psd_buttons = buttons  # type: ignore[attr-defined]
+        page._rel_psd_stack = stack  # type: ignore[attr-defined]
+        return page
+
+    def _select_segment(self, stack: QStackedWidget, index: int, callback: object | None) -> None:
+        stack.setCurrentIndex(index)
+        if callback is not None:
+            callback(index)  # type: ignore[operator]
 
     def _build_distance_phase_phase_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
         toolbar.addStretch()
         toolbar.addWidget(self.export_distance_phase_phase_graph_button)
         layout.addLayout(toolbar)
@@ -280,6 +553,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
         toolbar.addStretch()
         toolbar.addWidget(self.export_distance_phase_ground_graph_button)
         layout.addLayout(toolbar)
@@ -290,6 +564,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
         toolbar.addStretch()
         toolbar.addWidget(self.export_psd_settings_button)
         self.psd_reach_table = self._psd_reach_table()
@@ -301,6 +576,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
         toolbar.addStretch()
         toolbar.addWidget(self.export_psd_phase_phase_graph_button)
         layout.addLayout(toolbar)
@@ -311,6 +587,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
         toolbar.addStretch()
         toolbar.addWidget(self.export_psd_phase_ground_graph_button)
         layout.addLayout(toolbar)
@@ -385,63 +662,69 @@ class MainWindow(QMainWindow):
         text: str,
     ) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
+        item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
         return item
 
     def _update_psd_phase_ground_tab(self) -> None:
         if not hasattr(self, "psd_tabs"):
             return
-        ground_index = self.psd_tabs.indexOf(self.psd_phase_ground_tab)
         all_faults_selected = self.source_data_widget.protection_type_combo.currentIndex() == 0
-        if all_faults_selected and ground_index == -1:
-            report_index = self.psd_tabs.indexOf(self.psd_report_tab)
-            insert_index = report_index if report_index != -1 else self.psd_tabs.count()
-            self.psd_tabs.insertTab(
-                insert_index,
-                self.psd_phase_ground_tab,
-                self._translator.text("psd.phase_ground_graph"),
-            )
-        elif all_faults_selected and ground_index != -1:
-            self.psd_tabs.setTabText(
-                ground_index,
-                self._translator.text("psd.phase_ground_graph"),
-            )
-        elif not all_faults_selected and ground_index != -1:
-            self.psd_tabs.removeTab(ground_index)
+        self._set_segment_visible(self.psd_tabs, self.psd_phase_ground_tab, all_faults_selected)
 
     def _update_distance_phase_ground_tab(self) -> None:
         if not hasattr(self, "distance_tabs"):
             return
-        ground_index = self.distance_tabs.indexOf(self.distance_phase_ground_tab)
         all_faults_selected = self.source_data_widget.protection_type_combo.currentIndex() == 0
-        if all_faults_selected and ground_index == -1:
-            self.distance_tabs.addTab(
-                self.distance_phase_ground_tab,
-                self._translator.text("psd.phase_ground_graph"),
-            )
-        elif all_faults_selected and ground_index != -1:
-            self.distance_tabs.setTabText(
-                ground_index,
-                self._translator.text("psd.phase_ground_graph"),
-            )
-        elif not all_faults_selected and ground_index != -1:
-            self.distance_tabs.removeTab(ground_index)
+        self._set_segment_visible(
+            self.distance_tabs,
+            self.distance_phase_ground_tab,
+            all_faults_selected,
+        )
+
+    def _set_segment_visible(self, module: QWidget, widget: QWidget, visible: bool) -> None:
+        stack = getattr(module, "_rel_psd_stack", None)
+        buttons = getattr(module, "_rel_psd_buttons", [])
+        if not isinstance(stack, QStackedWidget):
+            return
+        index = stack.indexOf(widget)
+        if index < 0 or index >= len(buttons):
+            return
+        buttons[index].setVisible(visible)
+        if not visible and stack.currentIndex() == index:
+            for next_index, button in enumerate(buttons):
+                if button.isVisible():
+                    button.setChecked(True)
+                    stack.setCurrentIndex(next_index)
+                    if module is self.distance_tabs:
+                        self._on_distance_tab_changed(next_index)
+                    if module is self.psd_tabs:
+                        self._on_psd_tab_changed(next_index)
+                    break
 
     def _on_psd_tab_changed(self, index: int) -> None:
-        if index == self.psd_tabs.indexOf(self.psd_phase_phase_tab):
+        stack = getattr(self.psd_tabs, "_rel_psd_stack", None)
+        if not isinstance(stack, QStackedWidget):
+            return
+        current = stack.widget(index)
+        if current is self.psd_phase_phase_tab:
             self._plot_psd_phase_phase_zones()
-        if index == self.psd_tabs.indexOf(self.psd_phase_ground_tab):
+        if current is self.psd_phase_ground_tab:
             self._plot_psd_phase_ground_zones()
 
     def _on_distance_tab_changed(self, index: int) -> None:
-        if index == self.distance_tabs.indexOf(self.distance_phase_phase_tab):
+        stack = getattr(self.distance_tabs, "_rel_psd_stack", None)
+        if not isinstance(stack, QStackedWidget):
+            return
+        current = stack.widget(index)
+        if current is self.distance_phase_phase_tab:
             self._plot_distance_phase_phase_zones()
-        if index == self.distance_tabs.indexOf(self.distance_phase_ground_tab):
+        if current is self.distance_phase_ground_tab:
             self._plot_distance_phase_ground_zones()
 
     def _load_example_data(self) -> None:
-        self.project_name.setText("RET670 PSB Study")
+        self.project_name.setText("REL-670-Calculate")
         self.author.setText("")
-        self._calculate()
+        self._clear_results(update_lock=False)
 
     def _project_data(self) -> ProjectData:
         return ProjectData(
@@ -457,26 +740,355 @@ class MainWindow(QMainWindow):
             psb_settings=None,
         )
 
-    def _calculate(self) -> None:
-        project = self._project_data()
-        self._last_result = self._calculation_service.calculate(project)
-        plot_rx_diagram(
-            self.rx_panel.axis,
-            project.impedance_points,
-            self._last_result.distance_zones,
-            self._last_result.psb_characteristic,
-            self._rx_labels(),
+    def _calculate_all(self) -> None:
+        if self._calculate("psd"):
+            self._calculate_phs()
+
+    def _calculate_psd(self) -> None:
+        self._calculate("psd")
+
+    def _calculate_phs(self) -> None:
+        errors = self.source_data_widget.validate_for_calculation("phs")
+        if errors:
+            self.validation_message.setText("\n".join(errors))
+            self.validation_message.show()
+            self.statusBar().showMessage(
+                self._translator.text("message.validation_failed"),
+                5000,
+            )
+            return
+        self.validation_message.hide()
+        if not self._psd_calculated:
+            QMessageBox.warning(
+                self,
+                self._translator.text("phs.title"),
+                self._translator.text("message.psd_required_for_phs"),
+            )
+            return
+        use_psd_zone = self._confirm_use_psd_for_phs()
+        progress = self._create_progress_dialog(self._translator.text("progress.phs"))
+        self._advance_progress(progress, self._translator.text("progress.phs_stub"), 1)
+        self._last_phs_result = self._calculate_phs_selector_settings(
+            use_psd_zone=use_psd_zone
         )
-        self.rx_panel.redraw()
-        self._update_psd_reach_settings()
-        self._plot_psd_phase_phase_zones()
-        self._plot_psd_phase_ground_zones()
-        self._plot_distance_phase_phase_zones()
-        self._plot_distance_phase_ground_zones()
+        if self._last_phs_result is None:
+            progress.close()
+            QMessageBox.warning(
+                self,
+                self._translator.text("phs.title"),
+                self._translator.text("message.validation_failed"),
+            )
+            return
+        self._update_phs_settings_table()
+        self._plot_phs_graphs()
+        self._phs_calculated = True
+        self.phs_report_tab.setHtml(self._build_phs_report())
+        self.report_text.setHtml(self._build_zone_construction_report())
+        self._advance_progress(progress, self._translator.text("progress.done"), 2)
+        progress.close()
+        self._update_result_tab_state()
+        self.statusBar().showMessage(self._translator.text("message.calculated"), 5000)
+
+    def _confirm_use_psd_for_phs(self) -> bool:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._translator.text("phs.title"))
+        dialog.setMinimumSize(980, 720)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+
+        title = QLabel(self._translator.text("message.use_psd_for_phs_title"))
+        title.setObjectName("dialogQuestionTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        details = QLabel(self._translator.text("message.use_psd_for_phs_details"))
+        details.setObjectName("infoSection")
+        details.setWordWrap(True)
+        layout.addWidget(details)
+
+        graph_pages = [
+            (
+                self._translator.text("psd.phase_phase_graph"),
+                self._interactive_psd_preview_panel(
+                    self.psd_phase_phase_panel,
+                    self._psd_phase_phase_labels(),
+                ),
+            )
+        ]
+        if self.source_data_widget.protection_type_combo.currentIndex() == 0:
+            graph_pages.append(
+                (
+                    self._translator.text("psd.phase_ground_graph"),
+                    self._interactive_psd_preview_panel(
+                        self.psd_phase_ground_panel,
+                        self._psd_phase_ground_labels(),
+                    ),
+                )
+            )
+        layout.addWidget(
+            self._dialog_segmented_graphs(graph_pages),
+            1,
+        )
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(12)
+        buttons.addStretch()
+        yes_button = QPushButton(self._translator.text("button.yes"))
+        no_button = QPushButton(self._translator.text("button.no"))
+        yes_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        no_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        yes_button.clicked.connect(dialog.accept)
+        no_button.clicked.connect(dialog.reject)
+        buttons.addWidget(yes_button)
+        buttons.addWidget(no_button)
+        layout.addLayout(buttons)
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def _dialog_segmented_graphs(self, pages: list[tuple[str, QWidget]]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        segmented = QWidget()
+        segmented.setObjectName("segmentedControl")
+        segmented_layout = QHBoxLayout(segmented)
+        segmented_layout.setContentsMargins(0, 0, 0, 10)
+        segmented_layout.setSpacing(10)
+        stack = QStackedWidget()
+        for index, (title, widget) in enumerate(pages):
+            button = QPushButton(title)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda checked=False, selected=index: stack.setCurrentIndex(selected)
+            )
+            segmented_layout.addWidget(button)
+            stack.addWidget(widget)
+            if index == 0:
+                button.setChecked(True)
+        segmented_layout.addStretch()
+        layout.addWidget(segmented)
+        layout.addWidget(stack, 1)
+        return page
+
+    def _interactive_psd_preview_panel(
+        self,
+        source_panel: MatplotlibPanel,
+        labels: dict[str, str],
+    ) -> MatplotlibPanel:
+        panel = MatplotlibPanel()
+        axis = panel.axis
+        axis.clear()
+        configure_rx_axes(axis, labels)
+        line_by_label = {}
+        for source_line in source_panel.axis.get_lines():
+            label = source_line.get_label()
+            if not label or label.startswith("_"):
+                continue
+            line = axis.plot(
+                list(source_line.get_xdata()),
+                list(source_line.get_ydata()),
+                color=source_line.get_color(),
+                linestyle=source_line.get_linestyle(),
+                linewidth=source_line.get_linewidth(),
+                label=label,
+            )[0]
+            line.set_visible(source_line.get_visible())
+            line_by_label[label] = line
+        self._autoscale_visible(axis)
+        legend = axis.legend(loc="upper left") if line_by_label else None
+        if legend is not None:
+            for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
+                label = text.get_text()
+                visible = line_by_label[label].get_visible()
+                legend_line.set_picker(8)
+                text.set_picker(True)
+                legend_line.set_alpha(1.0 if visible else 0.25)
+                text.set_alpha(1.0 if visible else 0.35)
+                legend_line._rel_psd_zone_label = label  # type: ignore[attr-defined]
+                text._rel_psd_zone_label = label  # type: ignore[attr-defined]
+
+        def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
+            label = getattr(event.artist, "_rel_psd_zone_label", None)
+            if label not in line_by_label:
+                return
+            line = line_by_label[label]
+            line.set_visible(not line.get_visible())
+            if legend is not None:
+                for legend_line, text in zip(
+                    legend.get_lines(),
+                    legend.get_texts(),
+                    strict=False,
+                ):
+                    legend_label = text.get_text()
+                    visible = line_by_label[legend_label].get_visible()
+                    legend_line.set_alpha(1.0 if visible else 0.25)
+                    text.set_alpha(1.0 if visible else 0.35)
+            self._autoscale_visible(axis)
+            panel.redraw()
+
+        panel.canvas.mpl_connect("pick_event", toggle_zone)
+        panel.redraw()
+        return panel
+
+    def _calculate(self, mode: str = "all") -> bool:
+        errors = self.source_data_widget.validate_for_calculation(mode)
+        if errors:
+            self.validation_message.setText("\n".join(errors))
+            self.validation_message.show()
+            self.statusBar().showMessage(self._translator.text("message.validation_failed"), 5000)
+            return False
+        self.validation_message.hide()
+        progress = self._create_progress_dialog(
+            self._translator.text(
+                "progress.all" if mode == "all" else "progress.psd"
+            )
+        )
+        self._advance_progress(progress, self._translator.text("progress.read_inputs"), 1)
+        project = self._project_data()
+        self._advance_progress(progress, self._translator.text("progress.engineering"), 2)
+        self._last_result = self._calculation_service.calculate(project)
+        if mode in {"all", "psd"}:
+            self._advance_progress(progress, self._translator.text("progress.psd_settings"), 3)
+            self._update_psd_reach_settings()
+            self._plot_psd_phase_phase_zones()
+            self._plot_psd_phase_ground_zones()
+            self._plot_distance_phase_phase_zones()
+            self._plot_distance_phase_ground_zones()
+            self._psd_calculated = True
+        if mode == "all":
+            self._advance_progress(progress, self._translator.text("progress.distance_zones"), 4)
+            self._plot_distance_phase_phase_zones()
+            self._plot_distance_phase_ground_zones()
+        self._advance_progress(progress, self._translator.text("progress.report"), 5)
         self.results_text.setPlainText(to_json(self._last_result))
         self.report_text.setHtml(self._build_zone_construction_report())
         self.psd_report_text.setHtml(self._build_psd_engineering_report())
+        self._advance_progress(progress, self._translator.text("progress.done"), 6)
+        progress.close()
+        self._set_results_locked(True)
         self.statusBar().showMessage(self._translator.text("message.calculated"), 5000)
+        return True
+
+    def _create_progress_dialog(self, title: str) -> QProgressDialog:
+        progress = QProgressDialog("", "", 0, 6, self)
+        progress.setWindowTitle(title)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.show()
+        QApplication.processEvents()
+        return progress
+
+    def _advance_progress(
+        self,
+        progress: QProgressDialog,
+        message: str,
+        value: int,
+    ) -> None:
+        progress.setLabelText(message)
+        progress.setValue(value)
+        QApplication.processEvents()
+
+    def _confirm_clear_results(self) -> None:
+        if self._question_yes_no(
+            self._translator.text("button.clear_results"),
+            self._translator.text("message.confirm_clear_results"),
+            default_yes=False,
+        ):
+            self._clear_results(update_lock=True)
+
+    def _question_yes_no(self, title: str, text: str, *, default_yes: bool = True) -> bool:
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Question)
+        message.setWindowTitle(title)
+        message.setText(text)
+        yes_button = message.addButton(
+            self._translator.text("button.yes"),
+            QMessageBox.ButtonRole.YesRole,
+        )
+        no_button = message.addButton(
+            self._translator.text("button.no"),
+            QMessageBox.ButtonRole.NoRole,
+        )
+        message.setDefaultButton(yes_button if default_yes else no_button)
+        message.exec()
+        return message.clickedButton() is yes_button
+
+    def _clear_results(self, update_lock: bool = True) -> None:
+        self._last_result = None
+        self._last_psb_blocking_result = None
+        self._last_phs_result = None
+        self._psd_calculated = False
+        self._phs_calculated = False
+        self.results_text.clear()
+        self.report_text.clear()
+        self.psd_report_text.clear()
+        self.phs_report_tab.clear() if hasattr(self, "phs_report_tab") else None
+        if hasattr(self, "phs_settings_tab"):
+            for row in range(self.phs_settings_tab.rowCount()):
+                item = self.phs_settings_tab.item(row, 1)
+                if item is not None:
+                    item.setText("")
+        for panel_name in (
+            "phs_phase_phase_2ph_panel",
+            "phs_phase_phase_3ph_panel",
+            "phs_phase_ground_panel",
+            "phs_load_cut_panel",
+        ):
+            if hasattr(self, panel_name):
+                panel = getattr(self, panel_name)
+                panel.axis.clear()
+                panel.redraw()
+        for panel in (
+            self.rx_panel,
+            self.psd_phase_phase_panel,
+            self.psd_phase_ground_panel,
+            self.distance_phase_phase_panel,
+            self.distance_phase_ground_panel,
+        ):
+            panel.axis.clear()
+            panel.redraw()
+        for row in range(self.psd_reach_table.rowCount()):
+            name_item = self.psd_reach_table.item(row, 0)
+            value_item = self.psd_reach_table.item(row, 1)
+            if name_item is not None and value_item is not None:
+                value_item.setText(self._default_psd_value(name_item.text()))
+        self.validation_message.hide()
+        self.source_data_widget.clear_validation_errors()
+        if update_lock:
+            self._set_results_locked(False)
+        else:
+            self._update_result_tab_state()
+
+    def _set_results_locked(self, locked: bool) -> None:
+        self._results_locked = locked
+        self.source_data_widget.set_inputs_locked(locked)
+        self.project_name.setReadOnly(locked)
+        self.author.setReadOnly(locked)
+        self.clear_results_button.setEnabled(locked)
+        self.calculate_button.setEnabled(not locked)
+        self._update_result_tab_state()
+
+    def _update_result_tab_state(self) -> None:
+        self.calculate_button.setEnabled(not self._results_locked)
+        visible_by_index = {
+            self._input_tab_index: True,
+            self._distance_tab_index: self._psd_calculated,
+            self._psd_tab_index: self._psd_calculated,
+            self._phs_tab_index: self._phs_calculated,
+            self._journal_tab_index: True,
+        }
+        for index in range(self.tabs.count()):
+            visible = visible_by_index.get(index, False)
+            self.tabs.setTabVisible(index, visible)
+            self.tabs.setTabEnabled(index, visible)
+        current_index = self.tabs.currentIndex()
+        if not visible_by_index.get(current_index, False):
+            self.tabs.setCurrentIndex(self._input_tab_index)
 
     def _redraw_psd_charts(self) -> None:
         self._plot_psd_phase_phase_zones()
@@ -534,7 +1146,7 @@ class MainWindow(QMainWindow):
         return self._report_number(value)
 
     def _calculate_psb_blocking_settings(self) -> PsbBlockingResult | None:
-        sensitivity_factor = self.source_data_widget.sensitivity_factor_value()
+        sensitivity_factor = self.source_data_widget.psd_sensitivity_factor_value()
         if sensitivity_factor is None:
             return None
         stages = [
@@ -548,6 +1160,202 @@ class MainWindow(QMainWindow):
             sensitivity_factor,
             PsbLoadCutInput(**self.source_data_widget.load_cut_inputs()),
         )
+
+    def _calculate_phs_selector_settings(self, *, use_psd_zone: bool) -> PhsSelectorResult | None:
+        sensitivity_factor = self.source_data_widget.phs_sensitivity_factor_value()
+        if sensitivity_factor is None:
+            return None
+        stage = self._phs_stage_input()
+        if stage is None:
+            return None
+        return phs_selector_settings(
+            stage,
+            sensitivity_factor,
+            PsbLoadCutInput(**self.source_data_widget.load_cut_inputs()),
+            self._last_psb_blocking_result if use_psd_zone else None,
+            use_psd_zone=use_psd_zone,
+        )
+
+    def _disabled_psd_result(self) -> PsbBlockingResult:
+        return PsbBlockingResult(
+            sensitivity_factor=0.0,
+            forward=None,
+            reverse=None,
+            included_forward_stage_names=(),
+            included_reverse_stage_names=(),
+            arg_dir_deg=None,
+            arg_neg_res_deg=None,
+            arg_dir_fw_deg=None,
+            arg_neg_res_fw_deg=None,
+            arg_dir_rv_deg=None,
+            arg_neg_res_rv_deg=None,
+            load_angle_deg=None,
+            load_angle_candidates=(),
+            load_angle_fw_deg=None,
+            load_angle_rv_deg=None,
+            load_angle_fw_candidates=(),
+            load_angle_rv_candidates=(),
+            x1_in_fw_coverage_phase=None,
+            x1_in_fw_coverage_ground=None,
+            x1_in_fw_reverse_intersection_phase=None,
+            x1_in_fw_reverse_intersection_ground=None,
+            x1_in_fw=0.0,
+            r1f_in_fw_coverage_phase=None,
+            r1f_in_fw_coverage_ground=None,
+            r1f_in_fw_reverse_intersection_phase=None,
+            r1f_in_fw_reverse_intersection_ground=None,
+            r1f_in_fw=0.0,
+            x1_in_rv_coverage_phase=None,
+            x1_in_rv_coverage_ground=None,
+            x1_in_rv_forward_intersection_phase=None,
+            x1_in_rv_forward_intersection_ground=None,
+            x1_in_rv=0.0,
+            r1f_in_rv_coverage_phase=None,
+            r1f_in_rv_coverage_ground=None,
+            r1f_in_rv_forward_intersection_phase=None,
+            r1f_in_rv_forward_intersection_ground=None,
+            r1f_in_rv=0.0,
+            r1l_in_fw=0.0,
+            r1l_in_rv=0.0,
+            r1l_in=0.0,
+            load_cut=None,
+            rld_out_fw_load=None,
+            rld_out_rv_load=None,
+            rld_in_fw_load=None,
+            rld_in_rv_load=None,
+            rld_in_fw=None,
+            rld_in_rv=None,
+            rld_out_fw=99999.0,
+            rld_out_rv=99999.0,
+            kld_fw=1.0,
+            kld_rv=1.0,
+            arg_ld_fw_base_deg=None,
+            arg_ld_rv_base_deg=None,
+            arg_ld_selected_deg=None,
+            arg_ld_deg=0.0,
+        )
+
+    def _phs_stage_input(self) -> PhsStageInput | None:
+        stages = self.source_data_widget.psb_stage_setting_inputs()
+        selected_column = int(self.source_data_widget.sensitive_stage_combo.currentData() or 0)
+        selected_name = (
+            self._translator.text("source.step_template", number=selected_column)
+            if selected_column
+            else ""
+        )
+        selected = next(
+            (
+                stage
+                for stage in stages
+                if selected_name and stage["name"] == selected_name and bool(stage["is_forward"])
+            ),
+            None,
+        )
+        if selected is None:
+            forward_stages = [stage for stage in stages if bool(stage["is_forward"])]
+            if not forward_stages:
+                return None
+            selected = max(forward_stages, key=lambda stage: float(stage["x1"]))
+        return PhsStageInput(
+            name=str(selected["name"]),
+            x1=float(selected["x1"]),
+            r1=float(selected["r1"]),
+            x0=float(selected["x0"]),
+            r0=float(selected["r0"]),
+            rfpp=float(selected["rfpp"]),
+            rfpe=float(selected["rfpe"]),
+            arg_dir_deg=float(selected["arg_dir_deg"]),
+            arg_neg_res_deg=float(selected["arg_neg_res_deg"]),
+            load_angle_ground_deg=(
+                float(selected["compensated_load_angle_deg"])
+                if selected["compensated_load_angle_deg"] is not None
+                else None
+            ),
+        )
+
+    def _update_phs_settings_table(self) -> None:
+        result = self._last_phs_result
+        if result is None:
+            return
+        values = {
+            "INBlockPP": result.inblock_pp,
+            "INBlockPE": result.inblock_pe,
+            "RLd Fw": result.rld_fw,
+            "RLd Rv": result.rld_rv,
+            "ArgLd": result.arg_ld,
+            "X1": result.x1,
+            "X0": result.x0,
+            "RFFwPP": result.rffw_pp,
+            "RFRvPP": result.rfrv_pp,
+            "RFFw PE": result.rffw_pe,
+            "RFRv PE": result.rfrv_pe,
+        }
+        for row in range(self.phs_settings_tab.rowCount()):
+            name_item = self.phs_settings_tab.item(row, 0)
+            value_item = self.phs_settings_tab.item(row, 1)
+            if name_item is None or value_item is None:
+                continue
+            value_item.setText(self._report_optional_number(values.get(name_item.text())))
+
+    def _plot_phs_graphs(self) -> None:
+        result = self._last_phs_result
+        for panel, title in (
+            (self.phs_phase_phase_2ph_panel, self._translator.text("phs.phase_phase_2ph")),
+            (self.phs_phase_phase_3ph_panel, self._translator.text("phs.phase_phase_3ph")),
+            (self.phs_phase_ground_panel, self._translator.text("phs.phase_ground")),
+            (self.phs_load_cut_panel, self._translator.text("phs.load_cut")),
+        ):
+            axis = panel.axis
+            axis.clear()
+            configure_rx_axes(axis, {"title": title, "r_axis": "R, Ом", "x_axis": "X, Ом"})
+            if result is None:
+                panel.redraw()
+        if result is None:
+            return
+
+        phase_phase_points = [
+            (0.0, 0.0),
+            (result.rffw_pp / 2.0, 0.0),
+            (result.rffw_pp / 2.0, result.x1),
+            (-result.rfrv_pp / 2.0, result.x1),
+            (-result.rfrv_pp / 2.0, 0.0),
+            (0.0, 0.0),
+        ]
+        phase_phase_3ph_points = [
+            (0.0, 0.0),
+            (result.rffw_pp, 0.0),
+            (result.rffw_pp / 2.0, result.x1),
+            (-result.rfrv_pp / 2.0, result.x1),
+            (-result.rfrv_pp, 0.0),
+            (0.0, 0.0),
+        ]
+        phase_ground_points = [
+            (0.0, 0.0),
+            (result.rffw_pe, 0.0),
+            (result.rffw_pe, result.x0),
+            (-result.rfrv_pe, result.x0),
+            (-result.rfrv_pe, 0.0),
+            (0.0, 0.0),
+        ]
+        load_cut_points = [
+            (result.rld_fw, result.rld_fw * tan(result.arg_ld * pi / 180.0)),
+            (result.rld_fw, -result.rld_fw * tan(result.arg_ld * pi / 180.0)),
+            (-result.rld_rv, -result.rld_rv * tan(result.arg_ld * pi / 180.0)),
+            (-result.rld_rv, result.rld_rv * tan(result.arg_ld * pi / 180.0)),
+        ]
+        for panel, label, points in (
+            (self.phs_phase_phase_2ph_panel, "PHS 2ф", phase_phase_points),
+            (self.phs_phase_phase_3ph_panel, "PHS 3ф", phase_phase_3ph_points),
+            (self.phs_phase_ground_panel, "PHS фаза-земля", phase_ground_points),
+            (self.phs_load_cut_panel, "Виріз від навантаження", load_cut_points),
+        ):
+            axis = panel.axis
+            xs = [point[0] for point in points]
+            ys = [point[1] for point in points]
+            axis.plot(xs, ys, linewidth=1.0, label=label)
+            self._autoscale_visible(axis)
+            axis.legend(loc="upper left")
+            panel.redraw()
 
     def _psd_overlay_polygons(
         self,
@@ -749,6 +1557,9 @@ class MainWindow(QMainWindow):
             filtered.append(point)
         return tuple(filtered)
 
+    def _zone_line_style(self, label: str) -> str:
+        return "--" if label.startswith("RLD inner") else "-"
+
     def _plot_psd_phase_phase_zones(self) -> None:
         stages = [
             PhasePhaseStageInput(**stage)
@@ -767,13 +1578,13 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.8, label=zone.name)[0]
+            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
             visible = self._psd_phase_phase_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
                 point_labels = self._point_labels_for_count(len(zone.points))
-                axis.scatter(xs, ys, s=22, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     point_labels,
                     xs,
@@ -795,12 +1606,18 @@ class MainWindow(QMainWindow):
             self._psd_phase_phase_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
-            line = axis.plot(xs, ys, linewidth=1.8, linestyle="--", label=label)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                linestyle=self._zone_line_style(label),
+                label=label,
+            )[0]
             visible = self._psd_phase_phase_zone_visibility.get(label, True)
             line.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=20, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -847,12 +1664,12 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.8, label=zone.name)[0]
+            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
             visible = self._psd_phase_ground_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
-                axis.scatter(xs, ys, s=22, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
                     xs,
@@ -874,12 +1691,18 @@ class MainWindow(QMainWindow):
             self._psd_phase_ground_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
-            line = axis.plot(xs, ys, linewidth=1.8, linestyle="--", label=label)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                linestyle=self._zone_line_style(label),
+                label=label,
+            )[0]
             visible = self._psd_phase_ground_zone_visibility.get(label, True)
             line.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=20, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -922,6 +1745,12 @@ class MainWindow(QMainWindow):
         ]
 
     def _plot_distance_phase_phase_zones(self) -> None:
+        if self._last_result is None:
+            axis = self.distance_phase_phase_panel.axis
+            axis.clear()
+            configure_rx_axes(axis, self._phase_phase_distance_labels())
+            self.distance_phase_phase_panel.redraw()
+            return
         stages = [
             PhasePhaseStageInput(**stage)
             for stage in self.source_data_widget.phase_phase_stage_inputs()
@@ -937,12 +1766,12 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.8, label=zone.name)[0]
+            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
             visible = self._distance_phase_phase_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
-                axis.scatter(xs, ys, s=22, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
                     xs,
@@ -964,12 +1793,18 @@ class MainWindow(QMainWindow):
             self._distance_phase_phase_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
-            line = axis.plot(xs, ys, linewidth=1.8, linestyle="--", label=label)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                linestyle=self._zone_line_style(label),
+                label=label,
+            )[0]
             visible = self._distance_phase_phase_zone_visibility.get(label, True)
             line.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=20, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -999,6 +1834,12 @@ class MainWindow(QMainWindow):
         self.distance_phase_phase_panel.redraw()
 
     def _plot_distance_phase_ground_zones(self) -> None:
+        if self._last_result is None:
+            axis = self.distance_phase_ground_panel.axis
+            axis.clear()
+            configure_rx_axes(axis, self._phase_ground_distance_labels())
+            self.distance_phase_ground_panel.redraw()
+            return
         stages = [
             PhaseGroundStageInput(**stage)
             for stage in self.source_data_widget.phase_ground_stage_inputs()
@@ -1014,12 +1855,12 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.8, label=zone.name)[0]
+            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
             visible = self._distance_phase_ground_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
-                axis.scatter(xs, ys, s=22, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
                     xs,
@@ -1041,12 +1882,18 @@ class MainWindow(QMainWindow):
             self._distance_phase_ground_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
-            line = axis.plot(xs, ys, linewidth=1.8, linestyle="--", label=label)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                linestyle=self._zone_line_style(label),
+                label=label,
+            )[0]
             visible = self._distance_phase_ground_zone_visibility.get(label, True)
             line.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=20, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -1401,6 +2248,8 @@ class MainWindow(QMainWindow):
         if self._last_psb_blocking_result is not None:
             sections.append(self._psb_blocking_report(self._last_psb_blocking_result))
             sections.append(self._psd_overlay_report(self._last_psb_blocking_result))
+        if self._last_phs_result is not None:
+            sections.append(self._phs_journal_report())
         return "\n".join(sections)
 
     def _psd_overlay_report(self, result: PsbBlockingResult) -> str:
@@ -1462,7 +2311,7 @@ class MainWindow(QMainWindow):
             f"<p>{self._html(t('report.psd_engineering_intro'))}</p>",
             f"<h3>{self._html(t('report.psd_input_data'))}</h3>",
             self._protection_settings_report_table(result),
-            f"<p style='margin-bottom: 14px;'>{self._html(t('report.psd_sensitivity_used', value=k))}</p>",
+            f"<p style='margin-bottom: 14px;'>{self._math_html(t('report.psd_sensitivity_used', value=k))}</p>",
             self._psd_included_stages_table(result),
         ]
 
@@ -1483,7 +2332,8 @@ class MainWindow(QMainWindow):
             [self._translator.text("source.ktc_secondary"), widget.ktc_secondary.text(), "A"],
             [self._translator.text("source.ktn_primary"), widget.ktn_primary.text(), "В"],
             [self._translator.text("source.ktn_secondary"), widget.ktn_secondary.text(), "В"],
-            [self._translator.text("source.sensitivity_factor"), self._report_optional_number(result.sensitivity_factor), "в.о."],
+            [self._translator.text("source.sensitivity_factor_psd"), self._report_optional_number(result.sensitivity_factor), "в.о."],
+            [self._translator.text("source.sensitivity_factor_phs"), widget.phs_sensitivity_factor.text(), "в.о."],
             [self._translator.text("source.delta_phi"), self._report_optional_number(load_cut.delta_phi_deg if load_cut else None), "град"],
             [self._translator.text("source.rejection_factor"), self._report_optional_number(load_cut.rejection_factor if load_cut else None), "в.о."],
             [self._translator.text("source.delta_r_fw_rv"), self._report_optional_number(load_cut.delta_r_secondary if load_cut else None), "Ом"],
@@ -1579,22 +2429,547 @@ class MainWindow(QMainWindow):
                 [
                     self._translator.text("table.name"),
                     self._translator.text("report.psd_setting_value"),
-                    self._translator.text("psd.unit").capitalize(),
                 ],
                 [
-                    ["X₁InFw", self._report_optional_number(result.x1_in_fw), "Ом"],
-                    ["R₁FInFw", self._report_optional_number(result.r1f_in_fw), "Ом"],
-                    ["X₁InRv", self._report_optional_number(result.x1_in_rv), "Ом"],
-                    ["R₁FInRv", self._report_optional_number(result.r1f_in_rv), "Ом"],
-                    ["R₁LIn", self._report_optional_number(result.r1l_in), "Ом"],
-                    ["RᴸᵈOutFw", self._report_optional_number(result.rld_out_fw), "Ом"],
-                    ["RᴸᵈOutRv", self._report_optional_number(result.rld_out_rv), "Ом"],
-                    ["ArgLd", self._report_optional_number(result.arg_ld_deg), "град"],
-                    ["KᴸᵈFw", self._report_optional_number(result.kld_fw), "в.о."],
-                    ["KᴸᵈRv", self._report_optional_number(result.kld_rv), "в.о."],
+                    ["X1InFw", self._report_value_with_unit(result.x1_in_fw, "Ом")],
+                    ["R1FInFw", self._report_value_with_unit(result.r1f_in_fw, "Ом")],
+                    ["X1InRv", self._report_value_with_unit(result.x1_in_rv, "Ом")],
+                    ["R1FInRv", self._report_value_with_unit(result.r1f_in_rv, "Ом")],
+                    ["R1LIn", self._report_value_with_unit(result.r1l_in, "Ом")],
+                    ["RLdOutFw", self._report_value_with_unit(result.rld_out_fw, "Ом")],
+                    ["RLdOutRv", self._report_value_with_unit(result.rld_out_rv, "Ом")],
+                    ["ArgLd", self._report_value_with_unit(result.arg_ld_deg, "град")],
+                    ["KLdFw", self._report_value_with_unit(result.kld_fw, "в.о.")],
+                    ["KLdRv", self._report_value_with_unit(result.kld_rv, "в.о.")],
                 ],
             )
         )
+
+    def _phs_journal_report(self, *, include_heading: bool = True) -> str:
+        result = self._last_phs_result
+        if result is None:
+            return ""
+        return (
+            ("<h2>PHS</h2>" if include_heading else "")
+            + self._report_table_title("Прийняті уставки PHS")
+            + self._simple_table(
+                ["Назва", "Уставка"],
+                [
+                    ["INBlockPP", self._report_value_with_unit(result.inblock_pp, "А")],
+                    ["INBlockPE", self._report_value_with_unit(result.inblock_pe, "А")],
+                    ["RLd Fw", self._report_value_with_unit(result.rld_fw, "Ом")],
+                    ["RLd Rv", self._report_value_with_unit(result.rld_rv, "Ом")],
+                    ["ArgLd", self._report_value_with_unit(result.arg_ld, "град")],
+                    ["X1", self._report_value_with_unit(result.x1, "Ом")],
+                    ["X0", self._report_value_with_unit(result.x0, "Ом")],
+                    ["RFFwPP", self._report_value_with_unit(result.rffw_pp, "Ом")],
+                    ["RFRvPP", self._report_value_with_unit(result.rfrv_pp, "Ом")],
+                    ["RFFw PE", self._report_value_with_unit(result.rffw_pe, "Ом")],
+                    ["RFRv PE", self._report_value_with_unit(result.rfrv_pe, "Ом")],
+                ],
+            )
+        )
+
+    def _phs_input_tables(self, result: PhsSelectorResult) -> str:
+        stage = result.stage
+        load_cut = PsbLoadCutInput(**self.source_data_widget.load_cut_inputs())
+        parts = [
+            "<p>"
+            + self._math_html(
+                "Параметри налаштування PHS прийнято такими: "
+                f"KчPHS = {self._report_value_with_unit(result.phs_sensitivity_factor, 'в.о.')}; "
+                f"Kвід = {self._report_value_with_unit(load_cut.rejection_factor, 'в.о.')}; "
+                f"∆φ = {self._report_value_with_unit(load_cut.delta_phi_deg, 'град')}."
+            ),
+            "</p>",
+            self._report_table_title("Уставки чутливого ступеня PHS")
+            + self._simple_table(
+                ["Назва", stage.name],
+                [
+                    ["X1Zm", self._report_value_with_unit(stage.x1, "Ом")],
+                    ["R1Zm", self._report_value_with_unit(stage.r1, "Ом")],
+                    ["X0Zm", self._report_value_with_unit(stage.x0, "Ом")],
+                    ["R0Zm", self._report_value_with_unit(stage.r0, "Ом")],
+                    ["RFPPZm", self._report_value_with_unit(stage.rfpp, "Ом")],
+                    ["RFPEZm", self._report_value_with_unit(stage.rfpe, "Ом")],
+                    ["ArgDir", self._report_value_with_unit(stage.arg_dir_deg, "град")],
+                    ["ArgNegRes", self._report_value_with_unit(stage.arg_neg_res_deg, "град")],
+                    ["Fлк", self._report_value_with_unit(stage.load_angle_ground_deg, "град")],
+                ],
+            ),
+            self._report_table_title("Параметри навантаження PHS")
+            + self._load_modes_report_table()
+            + self._report_table_title("Опори навантаження PHS")
+            + self._simple_table(
+                [
+                    self._translator.text("source.direction"),
+                    "Rнав",
+                    "Xнав",
+                    "RLd",
+                    "Fнав",
+                ],
+                [
+                    [
+                        "Fw",
+                        self._report_value_with_unit(load_cut.r_load_fw, "Ом"),
+                        self._report_value_with_unit(load_cut.x_load_fw, "Ом"),
+                        self._report_value_with_unit(result.rld_fw_load, "Ом"),
+                        self._report_value_with_unit(self._load_angle_for_report(load_cut.r_load_fw, load_cut.x_load_fw), "град"),
+                    ],
+                    [
+                        "Rv",
+                        self._report_value_with_unit(load_cut.r_load_rv, "Ом"),
+                        self._report_value_with_unit(load_cut.x_load_rv, "Ом"),
+                        self._report_value_with_unit(result.rld_rv_load, "Ом"),
+                        self._report_value_with_unit(self._load_angle_for_report(load_cut.r_load_rv, load_cut.x_load_rv), "град"),
+                    ],
+                ],
+            ),
+        ]
+        if result.use_psd_zone and self._last_psb_blocking_result is not None:
+            psd = self._last_psb_blocking_result
+            parts.append(
+                self._report_table_title("Уставки PSD для розрахунку PHS")
+                + self._simple_table(
+                    ["Назва", "Уставка"],
+                    [
+                        ["ArgLdPSD", self._report_value_with_unit(psd.arg_ld_deg, "град")],
+                        ["KLdFwPSD", self._report_value_with_unit(psd.kld_fw, "в.о.")],
+                        ["KLdRvPSD", self._report_value_with_unit(psd.kld_rv, "в.о.")],
+                        ["RLdOutFwPSD", self._report_value_with_unit(psd.rld_out_fw, "Ом")],
+                        ["RLdOutRvPSD", self._report_value_with_unit(psd.rld_out_rv, "Ом")],
+                    ],
+                )
+            )
+        return "".join(parts)
+
+    def _report_value_with_unit(self, value: float | None, unit: str) -> str:
+        return f"{self._report_optional_number(value)} {unit}"
+
+    def _load_angle_for_report(self, r_value: float | None, x_value: float | None) -> float | None:
+        if r_value in (None, 0.0) or x_value is None:
+            return None
+        return abs(atan(x_value / r_value) * 180.0 / pi)
+
+    def _phs_formula_sources_text(self, formula: str) -> str:
+        settings_ref = "п. Вихідні дані"
+        stage_ref = self._table_reference("Уставки чутливого ступеня PHS")
+        load_ref = self._table_reference("Опори навантаження PHS")
+        psd_ref = self._table_reference("Уставки PSD для розрахунку PHS")
+        sources: list[str] = []
+        for token in ("KчPHS", "Kвід", "∆φ"):
+            if token in formula:
+                sources.append(f"{token} - {settings_ref}")
+        for token in (
+            "X1Zm",
+            "R1Zm",
+            "X0Zm",
+            "R0Zm",
+            "RFPPZm",
+            "RFPEZm",
+            "ArgDir",
+            "ArgNegRes",
+            "Fлк",
+        ):
+            if token in formula:
+                sources.append(f"{token} - {stage_ref}")
+        for token in ("RнавFw", "RнавRv", "Fнав"):
+            if token in formula:
+                sources.append(f"{token} - {load_ref}")
+        for token in ("ArgLdPSD", "KLdFwPSD", "KLdRvPSD", "RLdOutFwPSD", "RLdOutRvPSD"):
+            if token in formula:
+                sources.append(f"{token} - {psd_ref}")
+        if not sources:
+            return self._translator.text("report.formula_sources_none")
+        return self._translator.text(
+            "report.formula_sources",
+            sources="; ".join(dict.fromkeys(sources)),
+        )
+
+    def _phs_engineering_calculation_line(
+        self,
+        name: str,
+        formula: str,
+        substituted: str,
+        value: float | None,
+        unit: str,
+    ) -> str:
+        return (
+            f"{self._math_html(name)} = {self._math_html(formula)} = "
+            f"{self._html(substituted)} = "
+            f"{self._html(self._report_optional_number(value))} ({self._html(unit)})"
+            f"<br/><span>{self._math_html(self._phs_formula_sources_text(formula))}</span>"
+        )
+
+    def _phs_selection_block(
+        self,
+        name: str,
+        conditions: list[tuple[str, list[str]]],
+        compared_values: list[float | None],
+        final_value: float | None,
+        unit: str,
+        *,
+        selection_rule: str,
+    ) -> str:
+        values = [
+            self._report_optional_number(value)
+            for value in compared_values
+            if value is not None
+        ]
+        values_text = "; ".join(values) if values else "-"
+        condition_parts = []
+        for condition, lines in conditions:
+            condition_parts.append(f"<p>- {self._html(condition)}</p>")
+            for line in lines:
+                formula_part, _, source_part = line.partition("<br/>")
+                condition_parts.append(
+                    f"<p style='margin: 6px 0 2px 28px;'>{formula_part}</p>"
+                    f"<p style='margin: 0 0 12px 46px;'>{source_part}</p>"
+                )
+        final_value_text = self._html(self._report_optional_number(final_value))
+        final_value_html = (
+            f"<b>{final_value_text}</b>" if len(values) > 1 else final_value_text
+        )
+        return (
+            "<li>"
+            f"<p><b>{self._math_html(self._translator.text('report.psd_setting_choice', name=name))}</b></p>"
+            + "\n".join(condition_parts)
+            + "<p>"
+            f"Вибирається {self._html(selection_rule)} зі значень ({self._html(values_text)}): "
+            f"{final_value_html} ({self._html(unit)})."
+            + "</p>"
+            "</li>"
+        )
+
+    def _build_phs_report(self) -> str:
+        result = self._last_phs_result
+        if result is None:
+            return "<h2>PHS</h2><p>Дані для розрахунку відсутні.</p>"
+        n = self._report_optional_number
+        k = result.phs_sensitivity_factor
+        stage = result.stage
+        load_cut = PsbLoadCutInput(**self.source_data_widget.load_cut_inputs())
+        f_load_fw = self._load_angle_for_report(load_cut.r_load_fw, load_cut.x_load_fw)
+        f_load_rv = self._load_angle_for_report(load_cut.r_load_rv, load_cut.x_load_rv)
+        self._report_table_counter = 0
+        self._report_table_refs = {}
+
+        sections = [
+            "<h2>Розрахунок уставок фазового селектора PHS</h2>",
+            "<p>Розрахунок виконано за уставками чутливого прямого ступеня "
+            f"{self._html(stage.name)}. Усі тригонометричні функції у розрахунку "
+            "виконуються з переведенням кутів із градусів у радіани; у звіті кути "
+            "наведені у градусах.</p>",
+            "<h3>Вихідні дані</h3>",
+            self._phs_input_tables(result),
+            "<h3>Вибір уставок фазового селектора</h3>",
+            "<ol>",
+            self._phs_selection_block(
+                "X1",
+                [
+                    (
+                        "З умови забезпечення чутливості до 1ф КЗ на землю і 2ф КЗ у кінці ПЛ, що захищається.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "X1",
+                                "KчPHS*X1Zm",
+                                f"{n(k)}*{n(stage.x1)}",
+                                result.x1_ground_fault,
+                                "Ом",
+                            )
+                        ],
+                    ),
+                    (
+                        "При 3ф КЗ для направлених вперед ступенів: по охопленню ступеня в I чверті.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "X1",
+                                "KчPHS*(X1Zm*2/SQRT(3))",
+                                f"{n(k)}*({n(stage.x1)}*2/SQRT(3))",
+                                result.x1_three_phase_q1,
+                                "Ом",
+                            ),
+                        ],
+                    ),
+                    (
+                        "При 3ф КЗ для направлених вперед ступенів: по охопленню ступеня в IV чверті.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "X1",
+                                "KчPHS*(RFPPZm/(2*cosArgDir)*sin(30+ArgDir))",
+                                f"{n(k)}*({n(stage.rfpp)}/(2*cos({n(stage.arg_dir_deg)}))*sin(30+{n(stage.arg_dir_deg)}))",
+                                result.x1_three_phase_q4,
+                                "Ом",
+                            ),
+                        ],
+                    ),
+                ],
+                [result.x1_ground_fault, result.x1_three_phase_q1, result.x1_three_phase_q4],
+                result.x1,
+                "Ом",
+                selection_rule="максимальне значення",
+            ),
+            self._phs_selection_block(
+                "X0",
+                [
+                    (
+                        "З умови забезпечення чутливості до 1ф КЗ у кінці ПЛ, що захищається.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "X0",
+                                "KчPHS*X0Zm",
+                                f"{n(k)}*{n(stage.x0)}",
+                                result.x0,
+                                "Ом",
+                            )
+                        ],
+                    )
+                ],
+                [result.x0],
+                result.x0,
+                "Ом",
+                selection_rule="розраховане значення",
+            ),
+            self._phs_selection_block(
+                "RFRv PE",
+                [
+                    (
+                        "З умови перетину з лінією напрямленості у II чверті.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "RFRv PE",
+                                "KчPHS*(X1Zm+(X0Zm-X1Zm)/3)*tg(ArgNegRes-90)",
+                                f"{n(k)}*({n(stage.x1)}+({n(stage.x0)}-{n(stage.x1)})/3)"
+                                f"*tg({n(stage.arg_neg_res_deg)}-90)",
+                                result.rfrv_pe,
+                                "Ом",
+                            )
+                        ],
+                    )
+                ],
+                [result.rfrv_pe],
+                result.rfrv_pe,
+                "Ом",
+                selection_rule="розраховане значення",
+            ),
+            self._phs_selection_block(
+                "RFFw PE",
+                [
+                    (
+                        "З умови забезпечення чутливості до однофазних КЗ для прямого напрямку.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "RFFw PE",
+                                "KчPHS*RFPEZm"
+                                if (stage.load_angle_ground_deg or 0.0) > 60.0
+                                else "KчPHS*2*((R0Zm+2*R1Zm)/3+RFPEZm-(X0Zm+2*X1Zm)*ctg60/3)",
+                                (
+                                    f"{n(k)}*{n(stage.rfpe)}"
+                                    if (stage.load_angle_ground_deg or 0.0) > 60.0
+                                    else f"{n(k)}*2*(({n(stage.r0)}+2*{n(stage.r1)})/3+{n(stage.rfpe)}-({n(stage.x0)}+2*{n(stage.x1)})*ctg60/3)"
+                                ),
+                                result.rffw_pe,
+                                "Ом",
+                            )
+                        ],
+                    )
+                ],
+                [result.rffw_pe],
+                result.rffw_pe,
+                "Ом",
+                selection_rule="розраховане значення",
+            ),
+            self._phs_selection_block(
+                "RFFwPP",
+                [
+                    (
+                        "З умови забезпечення чутливості до міжфазних КЗ у кінці ПЛ при 2ф КЗ.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "RFFwPP",
+                                "KчPHS*RFPPZm"
+                                if (stage.load_angle_ground_deg or 0.0) > 60.0
+                                else "KчPHS*(2*R1Zm+RFPPZm-X1Zm*ctg60)",
+                                (
+                                    f"{n(k)}*{n(stage.rfpp)}"
+                                    if (stage.load_angle_ground_deg or 0.0) > 60.0
+                                    else f"{n(k)}*(2*{n(stage.r1)}+{n(stage.rfpp)}-{n(stage.x1)}*ctg60)"
+                                ),
+                                result.rffw_pp_two_phase,
+                                "Ом",
+                            )
+                        ],
+                    ),
+                    (
+                        "З умови забезпечення чутливості до міжфазних КЗ у кінці ПЛ при 3ф КЗ.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "RFFwPP",
+                                "KчPHS*(2*R1Zm+RFPPZm)*2/SQRT(3)",
+                                f"{n(k)}*(2*{n(stage.r1)}+{n(stage.rfpp)})*2/SQRT(3)",
+                                result.rffw_pp_three_phase,
+                                "Ом",
+                            )
+                        ],
+                    ),
+                ],
+                [result.rffw_pp_two_phase, result.rffw_pp_three_phase],
+                result.rffw_pp,
+                "Ом",
+                selection_rule="максимальне значення",
+            ),
+            "<li><p><b>Вибір уставок вирізу від навантаження</b></p><ol>",
+            self._phs_selection_block(
+                "RLdFw",
+                [
+                    (
+                        "Розрахунок за умовою відлаштування від режиму навантаження.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "RLdFw",
+                                "Kвід*RнавFw",
+                                f"{n(load_cut.rejection_factor)}*{n(load_cut.r_load_fw)}",
+                                result.rld_fw_load,
+                                "Ом",
+                            )
+                        ],
+                    ),
+                    *(
+                        [
+                            (
+                                "Розрахунок з урахуванням зони блокування від хитань PSD.",
+                                [
+                                    self._phs_engineering_calculation_line(
+                                        "RLdFw",
+                                        "KLdFwPSD*RLdOutFwPSD",
+                                        f"{n(self._last_psb_blocking_result.kld_fw if self._last_psb_blocking_result else None)}*"
+                                        f"{n(self._last_psb_blocking_result.rld_out_fw if self._last_psb_blocking_result else None)}",
+                                        result.rld_fw_psd,
+                                        "Ом",
+                                    )
+                                ],
+                            )
+                        ]
+                        if result.use_psd_zone
+                        else []
+                    ),
+                ],
+                [result.rld_fw_load, result.rld_fw_psd],
+                result.rld_fw,
+                "Ом",
+                selection_rule="мінімальне значення",
+            ),
+            self._phs_selection_block(
+                "RLdRv",
+                [
+                    (
+                        "Розрахунок за умовою відлаштування від режиму навантаження.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "RLdRv",
+                                "Kвід*RнавRv",
+                                f"{n(load_cut.rejection_factor)}*{n(load_cut.r_load_rv)}",
+                                result.rld_rv_load,
+                                "Ом",
+                            )
+                        ],
+                    ),
+                    *(
+                        [
+                            (
+                                "Розрахунок з урахуванням зони блокування від хитань PSD.",
+                                [
+                                    self._phs_engineering_calculation_line(
+                                        "RLdRv",
+                                        "KLdRvPSD*RLdOutRvPSD",
+                                        f"{n(self._last_psb_blocking_result.kld_rv if self._last_psb_blocking_result else None)}*"
+                                        f"{n(self._last_psb_blocking_result.rld_out_rv if self._last_psb_blocking_result else None)}",
+                                        result.rld_rv_psd,
+                                        "Ом",
+                                    )
+                                ],
+                            )
+                        ]
+                        if result.use_psd_zone
+                        else []
+                    ),
+                ],
+                [result.rld_rv_load, result.rld_rv_psd],
+                result.rld_rv,
+                "Ом",
+                selection_rule="мінімальне значення",
+            ),
+            self._phs_selection_block(
+                "ArgLd",
+                [
+                    (
+                        "Розрахунок кута вирізу від навантаження за режимами навантаження.",
+                        [
+                            self._phs_engineering_calculation_line(
+                                "ArgLd",
+                                "max(FнавFw; FнавRv)+∆φ",
+                                f"max({n(f_load_fw)}; {n(f_load_rv)})+{n(load_cut.delta_phi_deg)}",
+                                result.arg_ld_load,
+                                "град",
+                            )
+                        ],
+                    ),
+                    *(
+                        [
+                            (
+                                "Розрахунок кута вирізу від навантаження з урахуванням PSD.",
+                                [
+                                    self._phs_engineering_calculation_line(
+                                        "ArgLdFw",
+                                        "arctg(tgArgLdPSD/KLdFwPSD)",
+                                        f"arctg(tg({n(self._last_psb_blocking_result.arg_ld_deg if self._last_psb_blocking_result else None)})/"
+                                        f"{n(self._last_psb_blocking_result.kld_fw if self._last_psb_blocking_result else None)})",
+                                        result.arg_ld_fw_psd,
+                                        "град",
+                                    ),
+                                    self._phs_engineering_calculation_line(
+                                        "ArgLdRv",
+                                        "arctg(tgArgLdPSD/KLdRvPSD)",
+                                        f"arctg(tg({n(self._last_psb_blocking_result.arg_ld_deg if self._last_psb_blocking_result else None)})/"
+                                        f"{n(self._last_psb_blocking_result.kld_rv if self._last_psb_blocking_result else None)})",
+                                        result.arg_ld_rv_psd,
+                                        "град",
+                                    ),
+                                ],
+                            )
+                        ]
+                        if result.use_psd_zone
+                        else []
+                    ),
+                ],
+                [result.arg_ld_load, result.arg_ld_fw_psd, result.arg_ld_rv_psd],
+                result.arg_ld,
+                "град",
+                selection_rule="мінімальне значення",
+            ),
+            "</ol></li>",
+        ]
+        if not result.use_psd_zone:
+            sections.append(
+                "<p>Зону PSD не враховано, тому умови відлаштування RLD з урахуванням PSD "
+                "не розраховувалися і не брали участі у виборі результуючих уставок PHS.</p>"
+            )
+        sections.extend(
+            [
+                "</ol>",
+                "<p>"
+                + self._math_html(
+                    "Результуючі значення RLD вибрано як мінімальні з розрахованих умов: "
+                    f"RLdFw = {n(result.rld_fw)} (Ом); "
+                    f"RLdRv = {n(result.rld_rv)} (Ом); "
+                    f"ArgLd = {n(result.arg_ld)} (град)."
+                )
+                + "</p>",
+                "<h3>6. Прийняті уставки PHS</h3>",
+                self._phs_journal_report(include_heading=False),
+            ]
+        )
+        return "\n".join(sections)
 
     def _psd_detailed_setting_sections(self, result: PsbBlockingResult) -> list[str]:
         t = self._translator.text
@@ -1605,7 +2980,7 @@ class MainWindow(QMainWindow):
         n = self._report_optional_number
 
         def tg(angle: float | None) -> str:
-            return f"tg({n(angle)}*pi/180)"
+            return f"tg({n(angle)})"
 
         sections = [f"<h3>{self._html(t('report.psd_inner_forward'))}</h3>", "<ol>"]
         sections.append(
@@ -1617,13 +2992,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "X1InFw",
-                                "Kч*X1Fw",
+                                "KчPSD*X1Fw",
                                 f"{n(k)}*{n(forward.x1 if forward else None)}",
                                 result.x1_in_fw_coverage_phase,
                             ),
                             self._engineering_calculation_line(
                                 "X1InFw",
-                                "Kч*(X1Fw+(X0Fw-X1Fw)/3)",
+                                "KчPSD*(X1Fw+(X0Fw-X1Fw)/3)",
                                 f"{n(k)}*({n(forward.x1 if forward else None)}+({n(forward.x0 if forward else None)}-{n(forward.x1 if forward else None)})/3)",
                                 result.x1_in_fw_coverage_ground,
                             ),
@@ -1634,13 +3009,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "X1InFw",
-                                "Kч*(RFPPRv/2)*tg(ArgDirFw)",
+                                "KчPSD*(RFPPRv/2)*tg(ArgDirFw)",
                                 f"{n(k)}*({n(reverse.rfpp if reverse else None)}/2)*{tg(result.arg_dir_fw_deg)}",
                                 result.x1_in_fw_reverse_intersection_phase,
                             ),
                             self._engineering_calculation_line(
                                 "X1InFw",
-                                "Kч*RFPERv*tg(ArgDirFw)",
+                                "KчPSD*RFPERv*tg(ArgDirFw)",
                                 f"{n(k)}*{n(reverse.rfpe if reverse else None)}*{tg(result.arg_dir_fw_deg)}",
                                 result.x1_in_fw_reverse_intersection_ground,
                             ),
@@ -1666,13 +3041,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "R1FInFw",
-                                "Kч*(RFPPFw/2)",
+                                "KчPSD*(RFPPFw/2)",
                                 f"{n(k)}*({n(forward.rfpp if forward else None)}/2)",
                                 result.r1f_in_fw_coverage_phase,
                             ),
                             self._engineering_calculation_line(
                                 "R1FInFw",
-                                "Kч*RFPEFw",
+                                "KчPSD*RFPEFw",
                                 f"{n(k)}*{n(forward.rfpe if forward else None)}",
                                 result.r1f_in_fw_coverage_ground,
                             ),
@@ -1683,13 +3058,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "R1FInFw",
-                                "Kч*X1Rv*tg(ArgNegResFw-90)",
+                                "KчPSD*X1Rv*tg(ArgNegResFw-90)",
                                 f"{n(k)}*{n(reverse.x1 if reverse else None)}*{tg((result.arg_neg_res_fw_deg or 0.0) - 90.0 if result.arg_neg_res_fw_deg is not None else None)}",
                                 result.r1f_in_fw_reverse_intersection_phase,
                             ),
                             self._engineering_calculation_line(
                                 "R1FInFw",
-                                "Kч*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90)",
+                                "KчPSD*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90)",
                                 f"{n(k)}*({n(reverse.x1 if reverse else None)}+({n(reverse.x0 if reverse else None)}-{n(reverse.x1 if reverse else None)})/3)*{tg((result.arg_neg_res_fw_deg or 0.0) - 90.0 if result.arg_neg_res_fw_deg is not None else None)}",
                                 result.r1f_in_fw_reverse_intersection_ground,
                             ),
@@ -1716,13 +3091,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "X1InRv",
-                                "Kч*X1Rv",
+                                "KчPSD*X1Rv",
                                 f"{n(k)}*{n(reverse.x1 if reverse else None)}",
                                 result.x1_in_rv_coverage_phase,
                             ),
                             self._engineering_calculation_line(
                                 "X1InRv",
-                                "Kч*(X1Rv+(X0Rv-X1Rv)/3)",
+                                "KчPSD*(X1Rv+(X0Rv-X1Rv)/3)",
                                 f"{n(k)}*({n(reverse.x1 if reverse else None)}+({n(reverse.x0 if reverse else None)}-{n(reverse.x1 if reverse else None)})/3)",
                                 result.x1_in_rv_coverage_ground,
                             ),
@@ -1733,13 +3108,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "X1InRv",
-                                "Kч*(RFPPFw/2)*tg(ArgDirRv)",
+                                "KчPSD*(RFPPFw/2)*tg(ArgDirRv)",
                                 f"{n(k)}*({n(forward.rfpp if forward else None)}/2)*{tg(result.arg_dir_rv_deg)}",
                                 result.x1_in_rv_forward_intersection_phase,
                             ),
                             self._engineering_calculation_line(
                                 "X1InRv",
-                                "Kч*RFPEFw*tg(ArgDirRv)",
+                                "KчPSD*RFPEFw*tg(ArgDirRv)",
                                 f"{n(k)}*{n(forward.rfpe if forward else None)}*{tg(result.arg_dir_rv_deg)}",
                                 result.x1_in_rv_forward_intersection_ground,
                             ),
@@ -1765,13 +3140,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "R1FInRv",
-                                "Kч*(RFPPRv/2)",
+                                "KчPSD*(RFPPRv/2)",
                                 f"{n(k)}*({n(reverse.rfpp if reverse else None)}/2)",
                                 result.r1f_in_rv_coverage_phase,
                             ),
                             self._engineering_calculation_line(
                                 "R1FInRv",
-                                "Kч*RFPERv",
+                                "KчPSD*RFPERv",
                                 f"{n(k)}*{n(reverse.rfpe if reverse else None)}",
                                 result.r1f_in_rv_coverage_ground,
                             ),
@@ -1782,13 +3157,13 @@ class MainWindow(QMainWindow):
                         [
                             self._engineering_calculation_line(
                                 "R1FInRv",
-                                "Kч*X1Fw*tg(ArgNegResRv-90)",
+                                "KчPSD*X1Fw*tg(ArgNegResRv-90)",
                                 f"{n(k)}*{n(forward.x1 if forward else None)}*{tg((result.arg_neg_res_rv_deg or 0.0) - 90.0 if result.arg_neg_res_rv_deg is not None else None)}",
                                 result.r1f_in_rv_forward_intersection_phase,
                             ),
                             self._engineering_calculation_line(
                                 "R1FInRv",
-                                "Kч*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90)",
+                                "KчPSD*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90)",
                                 f"{n(k)}*({n(forward.x1 if forward else None)}+({n(forward.x0 if forward else None)}-{n(forward.x1 if forward else None)})/3)*{tg((result.arg_neg_res_rv_deg or 0.0) - 90.0 if result.arg_neg_res_rv_deg is not None else None)}",
                                 result.r1f_in_rv_forward_intersection_ground,
                             ),
@@ -1991,7 +3366,7 @@ class MainWindow(QMainWindow):
         return (
             f"{self._math_html(name)} = {self._math_html(formula)} = "
             f"{self._html(substituted)} = {self._html(self._report_optional_number(value))}"
-            f"<br/><span>{self._html(self._formula_sources_text(formula))}</span>"
+            f"<br/><span>{self._math_html(self._formula_sources_text(formula))}</span>"
         )
 
     def _engineering_selection_block(
@@ -2011,16 +3386,12 @@ class MainWindow(QMainWindow):
         condition_parts = []
         for condition, lines in conditions:
             condition_parts.append(f"<p>- {self._html(condition)}</p>")
-            condition_parts.append("<ul style='margin-top: 4px; margin-bottom: 12px;'>")
             for line in lines:
                 formula_part, _, source_part = line.partition("<br/>")
                 condition_parts.append(
-                    "<li>"
-                    f"<p style='margin-bottom: 2px;'>{formula_part} ({self._html(unit)})</p>"
-                    f"<p style='margin-top: 0; margin-left: 18px;'>{source_part}</p>"
-                    "</li>"
+                    f"<p style='margin: 6px 0 2px 28px;'>{formula_part} ({self._html(unit)})</p>"
+                    f"<p style='margin: 0 0 12px 46px;'>{source_part}</p>"
                 )
-            condition_parts.append("</ul>")
         final_value_text = self._html(self._report_optional_number(final_value))
         final_value_html = (
             f"<b>{final_value_text}</b>" if len(values) > 1 else final_value_text
@@ -2037,7 +3408,7 @@ class MainWindow(QMainWindow):
             f"<p><b>{self._math_html(self._translator.text('report.psd_setting_choice', name=name))}</b></p>"
             + "\n".join(condition_parts)
             + "<p>"
-            + self._html(final_text).replace(token, final_value_html)
+            + self._math_html(final_text).replace(token, final_value_html)
             + "</p>"
             "</li>"
         )
@@ -2075,6 +3446,8 @@ class MainWindow(QMainWindow):
         )
         sources: list[str] = []
         for token in (
+            "KчPSD",
+            "KчPHS",
             "Kч",
             "Kвід",
             "∆RFw",
@@ -2120,6 +3493,30 @@ class MainWindow(QMainWindow):
     def _math_html(self, text: str) -> str:
         escaped = self._html(text)
         replacements = {
+            "KчPSD": "K<sub>чPSD</sub>",
+            "KчPHS": "K<sub>чPHS</sub>",
+            "X1Zm": "X<sub>1Zm</sub>",
+            "R1Zm": "R<sub>1Zm</sub>",
+            "X0Zm": "X<sub>0Zm</sub>",
+            "R0Zm": "R<sub>0Zm</sub>",
+            "RFPPZm": "RF<sub>FPPZm</sub>",
+            "RFPEZm": "RF<sub>FPEZm</sub>",
+            "RFRv PE": "RF<sub>Rv PE</sub>",
+            "RFFw PE": "RF<sub>Fw PE</sub>",
+            "RFFwPP": "RF<sub>FwPP</sub>",
+            "RFPP": "RF<sub>FPP</sub>",
+            "RFPE": "RF<sub>FPE</sub>",
+            "ArgNegRes": "ArgNegRes",
+            "ArgDir": "ArgDir",
+            "Fлк": "F<sub>лк</sub>",
+            "ArgNegResFw": "ArgNegRes<sub>Fw</sub>",
+            "ArgNegResRv": "ArgNegRes<sub>Rv</sub>",
+            "ArgDirFw": "ArgDir<sub>Fw</sub>",
+            "ArgDirRv": "ArgDir<sub>Rv</sub>",
+            "RFPPRv": "R<sub>FPPRv</sub>",
+            "RFPERv": "R<sub>FPERv</sub>",
+            "RFPPFw": "RFPP<sub>Fw</sub>",
+            "RFPEFw": "RFPE<sub>Fw</sub>",
             "X1InFw": "X<sub>1InFw</sub>",
             "R1FInFw": "R<sub>1FInFw</sub>",
             "X1InRv": "X<sub>1InRv</sub>",
@@ -2131,12 +3528,22 @@ class MainWindow(QMainWindow):
             "RLdOutRv": "R<sub>LdOutRv</sub>",
             "RLdInFw": "R<sub>LdInFw</sub>",
             "RLdInRv": "R<sub>LdInRv</sub>",
+            "FлFw": "F<sub>лFw</sub>",
+            "FлRv": "F<sub>лRv</sub>",
             "KLdFw": "K<sub>LdFw</sub>",
             "KLdRv": "K<sub>LdRv</sub>",
             "X1Fw": "X<sub>1Fw</sub>",
             "X0Fw": "X<sub>0Fw</sub>",
             "X1Rv": "X<sub>1Rv</sub>",
             "X0Rv": "X<sub>0Rv</sub>",
+            "Kч": "K<sub>ч</sub>",
+            "Kвід": "K<sub>від</sub>",
+            "RнавFw": "R<sub>навFw</sub>",
+            "RнавRv": "R<sub>навRv</sub>",
+            "RLdFw": "R<sub>LdFw</sub>",
+            "RLdRv": "R<sub>LdRv</sub>",
+            "X1": "X<sub>1</sub>",
+            "X0": "X<sub>0</sub>",
         }
         for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
             escaped = escaped.replace(source, target)
@@ -2222,9 +3629,9 @@ class MainWindow(QMainWindow):
             return []
 
         n = self._report_number
-        tg_line = f"tg({n(line_angle)}*pi/180)"
-        tg_arg_ld = f"tg({n(arg_ld)}*pi/180)"
-        tg_90_line = f"tg((90-{n(line_angle)})*pi/180)"
+        tg_line = f"tg({n(line_angle)})"
+        tg_arg_ld = f"tg({n(arg_ld)})"
+        tg_90_line = f"tg((90-{n(line_angle)}))"
 
         def p(
             label: str,
@@ -2271,7 +3678,7 @@ class MainWindow(QMainWindow):
                 p("I", "0", "0", 0.0, "-X1InRv", f"-{n(x1_rv)}", -x1_rv),
                 p(
                     "L",
-                    "-(R1FInRv + X1InRv/tg(Line Angle*pi/180))",
+                    "-(R1FInRv + X1InRv/tg(Line Angle))",
                     f"-({n(r_rv)} + {n(x1_rv)}/{tg_line})",
                     left_inner_x,
                     "-X1InRv",
@@ -2280,7 +3687,7 @@ class MainWindow(QMainWindow):
                 ),
                 p(
                     "M",
-                    "-(R1FInRv + X1InRv/tg(Line Angle*pi/180))",
+                    "-(R1FInRv + X1InRv/tg(Line Angle))",
                     f"-({n(r_rv)} + {n(x1_rv)}/{tg_line})",
                     left_inner_x,
                     "-X1InRv",
@@ -2300,7 +3707,7 @@ class MainWindow(QMainWindow):
                 p("A'", "0", "0", 0.0, "X1InFw + DELTA FW", f"{n(x1_fw)} + {n(delta_fw)}", x1_fw + delta_fw),
                 p(
                     "B'",
-                    "R1LIn + R1FInFw + DELTA FW + DELTA FW*tg((90-Line Angle)*pi/180)",
+                    "R1LIn + R1FInFw + DELTA FW + DELTA FW*tg((90-Line Angle))",
                     f"{n(r_line)} + {n(r_fw)} + {n(delta_fw)} + {n(delta_fw)}*{tg_90_line}",
                     b_prime_x,
                     "X1InFw + DELTA FW",
@@ -2309,7 +3716,7 @@ class MainWindow(QMainWindow):
                 ),
                 p(
                     "C'",
-                    "R1LIn + R1FInFw + DELTA FW + DELTA FW*tg((90-Line Angle)*pi/180)",
+                    "R1LIn + R1FInFw + DELTA FW + DELTA FW*tg((90-Line Angle))",
                     f"{n(r_line)} + {n(r_fw)} + {n(delta_fw)} + {n(delta_fw)}*{tg_90_line}",
                     b_prime_x,
                     "X1InFw + DELTA FW",
@@ -2356,7 +3763,7 @@ class MainWindow(QMainWindow):
                 p("I'", "0", "0", 0.0, "-X1InRv - DELTA RV", f"-{n(x1_rv)} - {n(delta_rv)}", -x1_rv - delta_rv),
                 p(
                     "L'",
-                    "-(R1FInRv + X1InRv/tg(Line Angle*pi/180) + DELTA RV + DELTA RV/tg(Line Angle*pi/180))",
+                    "-(R1FInRv + X1InRv/tg(Line Angle) + DELTA RV + DELTA RV/tg(Line Angle))",
                     f"-({n(r_rv)} + {n(x1_rv)}/{tg_line} + {n(delta_rv)} + {n(delta_rv)}/{tg_line})",
                     left_outer_x,
                     "-X1InRv - DELTA RV",
@@ -2365,7 +3772,7 @@ class MainWindow(QMainWindow):
                 ),
                 p(
                     "M'",
-                    "-(R1FInRv + X1InRv/tg(Line Angle*pi/180) + DELTA RV + DELTA RV/tg(Line Angle*pi/180))",
+                    "-(R1FInRv + X1InRv/tg(Line Angle) + DELTA RV + DELTA RV/tg(Line Angle))",
                     f"-({n(r_rv)} + {n(x1_rv)}/{tg_line} + {n(delta_rv)} + {n(delta_rv)}/{tg_line})",
                     left_outer_x,
                     "-X1InRv - DELTA RV",
@@ -2398,28 +3805,28 @@ class MainWindow(QMainWindow):
         )
 
         rld_inner_fw = (
-            p("AA", "RLdInFw_load*1,5", f"{n(rld_in_fw_load)}*1,5", rld_in_fw_load * 1.5, "(RLdInFw_load*1,5 + DELTA FW)*tg(ArgLd*pi/180)", f"({n(rld_in_fw_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", (rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld),
-            p("BB", "RLdInFw_load", n(rld_in_fw_load), rld_in_fw_load, "RLdOutFw_load*tg(ArgLd*pi/180)", f"{n(rld_out_fw_load)}*{tg_arg_ld}", rld_out_fw_load * tan_arg_ld),
-            p("CC", "RLdInFw_load", n(rld_in_fw_load), rld_in_fw_load, "-RLdOutFw_load*tg(ArgLd*pi/180)", f"-{n(rld_out_fw_load)}*{tg_arg_ld}", -rld_out_fw_load * tan_arg_ld),
-            p("DD", "RLdInFw_load*1,5", f"{n(rld_in_fw_load)}*1,5", rld_in_fw_load * 1.5, "-(RLdInFw_load*1,5 + DELTA FW)*tg(ArgLd*pi/180)", f"-({n(rld_in_fw_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", -(rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld),
+            p("AA", "RLdInFw_load*1,5", f"{n(rld_in_fw_load)}*1,5", rld_in_fw_load * 1.5, "(RLdInFw_load*1,5 + DELTA FW)*tg(ArgLd)", f"({n(rld_in_fw_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", (rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld),
+            p("BB", "RLdInFw_load", n(rld_in_fw_load), rld_in_fw_load, "RLdOutFw_load*tg(ArgLd)", f"{n(rld_out_fw_load)}*{tg_arg_ld}", rld_out_fw_load * tan_arg_ld),
+            p("CC", "RLdInFw_load", n(rld_in_fw_load), rld_in_fw_load, "-RLdOutFw_load*tg(ArgLd)", f"-{n(rld_out_fw_load)}*{tg_arg_ld}", -rld_out_fw_load * tan_arg_ld),
+            p("DD", "RLdInFw_load*1,5", f"{n(rld_in_fw_load)}*1,5", rld_in_fw_load * 1.5, "-(RLdInFw_load*1,5 + DELTA FW)*tg(ArgLd)", f"-({n(rld_in_fw_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", -(rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld),
         )
         rld_inner_rv = (
-            p("EE", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "(RLdInRv_load*1,5 + DELTA FW)*tg(ArgLd*pi/180)", f"({n(rld_in_rv_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", (rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld),
-            p("FF", "-RLdInRv_load", f"-{n(rld_in_rv_load)}", -rld_in_rv_load, "RLdOutRv_load*tg(ArgLd*pi/180)", f"{n(rld_out_rv_load)}*{tg_arg_ld}", rld_out_rv_load * tan_arg_ld),
-            p("GG", "-RLdInRv_load", f"-{n(rld_in_rv_load)}", -rld_in_rv_load, "-RLdOutRv_load*tg(ArgLd*pi/180)", f"-{n(rld_out_rv_load)}*{tg_arg_ld}", -rld_out_rv_load * tan_arg_ld),
-            p("HH", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "-(RLdInRv_load*1,5 + DELTA FW)*tg(ArgLd*pi/180)", f"-({n(rld_in_rv_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", -(rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld),
+            p("EE", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "(RLdInRv_load*1,5 + DELTA FW)*tg(ArgLd)", f"({n(rld_in_rv_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", (rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld),
+            p("FF", "-RLdInRv_load", f"-{n(rld_in_rv_load)}", -rld_in_rv_load, "RLdOutRv_load*tg(ArgLd)", f"{n(rld_out_rv_load)}*{tg_arg_ld}", rld_out_rv_load * tan_arg_ld),
+            p("GG", "-RLdInRv_load", f"-{n(rld_in_rv_load)}", -rld_in_rv_load, "-RLdOutRv_load*tg(ArgLd)", f"-{n(rld_out_rv_load)}*{tg_arg_ld}", -rld_out_rv_load * tan_arg_ld),
+            p("HH", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "-(RLdInRv_load*1,5 + DELTA FW)*tg(ArgLd)", f"-({n(rld_in_rv_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", -(rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld),
         )
         rld_outer_fw = (
-            p("AA'", "RLdOutFw_load*1,5", f"{n(rld_out_fw_load)}*1,5", rld_out_fw_load * 1.5, "RLdOutFw_load*1,5*tg(ArgLd*pi/180)", f"{n(rld_out_fw_load)}*1,5*{tg_arg_ld}", rld_out_fw_load * 1.5 * tan_arg_ld),
-            p("BB'", "RLdOutFw_load", n(rld_out_fw_load), rld_out_fw_load, "RLdOutFw_load*tg(ArgLd*pi/180)", f"{n(rld_out_fw_load)}*{tg_arg_ld}", rld_out_fw_load * tan_arg_ld),
-            p("CC'", "RLdOutFw_load", n(rld_out_fw_load), rld_out_fw_load, "-RLdOutFw_load*tg(ArgLd*pi/180)", f"-{n(rld_out_fw_load)}*{tg_arg_ld}", -rld_out_fw_load * tan_arg_ld),
-            p("DD'", "RLdOutFw_load*1,5", f"{n(rld_out_fw_load)}*1,5", rld_out_fw_load * 1.5, "-RLdOutFw_load*1,5*tg(ArgLd*pi/180)", f"-{n(rld_out_fw_load)}*1,5*{tg_arg_ld}", -rld_out_fw_load * 1.5 * tan_arg_ld),
+            p("AA'", "RLdOutFw_load*1,5", f"{n(rld_out_fw_load)}*1,5", rld_out_fw_load * 1.5, "RLdOutFw_load*1,5*tg(ArgLd)", f"{n(rld_out_fw_load)}*1,5*{tg_arg_ld}", rld_out_fw_load * 1.5 * tan_arg_ld),
+            p("BB'", "RLdOutFw_load", n(rld_out_fw_load), rld_out_fw_load, "RLdOutFw_load*tg(ArgLd)", f"{n(rld_out_fw_load)}*{tg_arg_ld}", rld_out_fw_load * tan_arg_ld),
+            p("CC'", "RLdOutFw_load", n(rld_out_fw_load), rld_out_fw_load, "-RLdOutFw_load*tg(ArgLd)", f"-{n(rld_out_fw_load)}*{tg_arg_ld}", -rld_out_fw_load * tan_arg_ld),
+            p("DD'", "RLdOutFw_load*1,5", f"{n(rld_out_fw_load)}*1,5", rld_out_fw_load * 1.5, "-RLdOutFw_load*1,5*tg(ArgLd)", f"-{n(rld_out_fw_load)}*1,5*{tg_arg_ld}", -rld_out_fw_load * 1.5 * tan_arg_ld),
         )
         rld_outer_rv = (
-            p("EE'", "-RLdOutRv_load*1,5", f"-{n(rld_out_rv_load)}*1,5", -rld_out_rv_load * 1.5, "RLdOutRv_load*1,5*tg(ArgLd*pi/180)", f"{n(rld_out_rv_load)}*1,5*{tg_arg_ld}", rld_out_rv_load * 1.5 * tan_arg_ld),
-            p("FF'", "-RLdOutRv_load", f"-{n(rld_out_rv_load)}", -rld_out_rv_load, "RLdOutRv_load*tg(ArgLd*pi/180)", f"{n(rld_out_rv_load)}*{tg_arg_ld}", rld_out_rv_load * tan_arg_ld),
-            p("GG'", "-RLdOutRv_load", f"-{n(rld_out_rv_load)}", -rld_out_rv_load, "-RLdOutRv_load*tg(ArgLd*pi/180)", f"-{n(rld_out_rv_load)}*{tg_arg_ld}", -rld_out_rv_load * tan_arg_ld),
-            p("HH'", "-RLdOutRv_load*1,5", f"-{n(rld_out_rv_load)}*1,5", -rld_out_rv_load * 1.5, "-RLdOutRv_load*1,5*tg(ArgLd*pi/180)", f"-{n(rld_out_rv_load)}*1,5*{tg_arg_ld}", -rld_out_rv_load * 1.5 * tan_arg_ld),
+            p("EE'", "-RLdOutRv_load*1,5", f"-{n(rld_out_rv_load)}*1,5", -rld_out_rv_load * 1.5, "RLdOutRv_load*1,5*tg(ArgLd)", f"{n(rld_out_rv_load)}*1,5*{tg_arg_ld}", rld_out_rv_load * 1.5 * tan_arg_ld),
+            p("FF'", "-RLdOutRv_load", f"-{n(rld_out_rv_load)}", -rld_out_rv_load, "RLdOutRv_load*tg(ArgLd)", f"{n(rld_out_rv_load)}*{tg_arg_ld}", rld_out_rv_load * tan_arg_ld),
+            p("GG'", "-RLdOutRv_load", f"-{n(rld_out_rv_load)}", -rld_out_rv_load, "-RLdOutRv_load*tg(ArgLd)", f"-{n(rld_out_rv_load)}*{tg_arg_ld}", -rld_out_rv_load * tan_arg_ld),
+            p("HH'", "-RLdOutRv_load*1,5", f"-{n(rld_out_rv_load)}*1,5", -rld_out_rv_load * 1.5, "-RLdOutRv_load*1,5*tg(ArgLd)", f"-{n(rld_out_rv_load)}*1,5*{tg_arg_ld}", -rld_out_rv_load * 1.5 * tan_arg_ld),
         )
 
         return [
@@ -2496,7 +3903,7 @@ class MainWindow(QMainWindow):
         def tan_text(angle_deg: float | None) -> str:
             if angle_deg is None:
                 return "tg(-)"
-            return f"tg({self._report_number(angle_deg)}*pi/180)"
+            return f"tg({self._report_number(angle_deg)})"
 
         def min_text(*values: float | None) -> str:
             complete_values = [value_text(value) for value in values if value is not None]
@@ -2568,7 +3975,7 @@ class MainWindow(QMainWindow):
 
         add_condition(
             t("report.psb.forward_coverage"),
-            "1.1 X1InFw: Kч*X1Fw",
+            "1.1 X1InFw: KчPSD*X1Fw",
             result.x1_in_fw_coverage_phase,
             t("report.psb.forward_coverage_comment"),
             "1.1 X1InFw = "
@@ -2576,7 +3983,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.forward_coverage"),
-            "1.1 X1InFw: Kч*(X1Fw+(X0Fw-X1Fw)/3)",
+            "1.1 X1InFw: KчPSD*(X1Fw+(X0Fw-X1Fw)/3)",
             result.x1_in_fw_coverage_ground,
             t("report.psb.forward_coverage_comment"),
             "1.1 X1InFw = "
@@ -2586,14 +3993,14 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.forward_coverage"),
-            "1.1 X1InFw = max(Kч*X1Fw; Kч*(X1Fw+(X0Fw-X1Fw)/3))",
+            "1.1 X1InFw = max(KчPSD*X1Fw; KчPSD*(X1Fw+(X0Fw-X1Fw)/3))",
             x1_fw_11,
-            ("Kч*X1Fw", result.x1_in_fw_coverage_phase),
-            ("Kч*(X1Fw+(X0Fw-X1Fw)/3)", result.x1_in_fw_coverage_ground),
+            ("KчPSD*X1Fw", result.x1_in_fw_coverage_phase),
+            ("KчPSD*(X1Fw+(X0Fw-X1Fw)/3)", result.x1_in_fw_coverage_ground),
         )
         add_condition(
             t("report.psb.forward_coverage"),
-            "1.1 R1FInFw: Kч*(RFPPFw/2)",
+            "1.1 R1FInFw: KчPSD*(RFPPFw/2)",
             result.r1f_in_fw_coverage_phase,
             t("report.psb.forward_coverage_comment"),
             "1.1 R1FInFw = "
@@ -2601,7 +4008,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.forward_coverage"),
-            "1.1 R1FInFw: Kч*RFPEFw",
+            "1.1 R1FInFw: KчPSD*RFPEFw",
             result.r1f_in_fw_coverage_ground,
             t("report.psb.forward_coverage_comment"),
             "1.1 R1FInFw = "
@@ -2609,14 +4016,14 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.forward_coverage"),
-            "1.1 R1FInFw = max(Kч*(RFPPFw/2); Kч*RFPEFw)",
+            "1.1 R1FInFw = max(KчPSD*(RFPPFw/2); KчPSD*RFPEFw)",
             r1f_fw_11,
-            ("Kч*(RFPPFw/2)", result.r1f_in_fw_coverage_phase),
-            ("Kч*RFPEFw", result.r1f_in_fw_coverage_ground),
+            ("KчPSD*(RFPPFw/2)", result.r1f_in_fw_coverage_phase),
+            ("KчPSD*RFPEFw", result.r1f_in_fw_coverage_ground),
         )
         add_condition(
             t("report.psb.forward_reverse_intersection"),
-            "1.3 X1InFw: Kч*(RFPPRv/2)*tg(ArgDirFw)",
+            "1.3 X1InFw: KчPSD*(RFPPRv/2)*tg(ArgDirFw)",
             result.x1_in_fw_reverse_intersection_phase,
             t("report.psb.forward_reverse_intersection_comment"),
             "1.3 X1InFw = "
@@ -2625,7 +4032,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.forward_reverse_intersection"),
-            "1.3 X1InFw: Kч*RFPERv*tg(ArgDirFw)",
+            "1.3 X1InFw: KчPSD*RFPERv*tg(ArgDirFw)",
             result.x1_in_fw_reverse_intersection_ground,
             t("report.psb.forward_reverse_intersection_comment"),
             "1.3 X1InFw = "
@@ -2634,14 +4041,14 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.forward_reverse_intersection"),
-            "1.3 X1InFw = max(Kч*(RFPPRv/2)*tg(ArgDirFw); Kч*RFPERv*tg(ArgDirFw))",
+            "1.3 X1InFw = max(KчPSD*(RFPPRv/2)*tg(ArgDirFw); KчPSD*RFPERv*tg(ArgDirFw))",
             x1_fw_13,
-            ("Kч*(RFPPRv/2)*tg(ArgDirFw)", result.x1_in_fw_reverse_intersection_phase),
-            ("Kч*RFPERv*tg(ArgDirFw)", result.x1_in_fw_reverse_intersection_ground),
+            ("KчPSD*(RFPPRv/2)*tg(ArgDirFw)", result.x1_in_fw_reverse_intersection_phase),
+            ("KчPSD*RFPERv*tg(ArgDirFw)", result.x1_in_fw_reverse_intersection_ground),
         )
         add_condition(
             t("report.psb.forward_reverse_intersection"),
-            "1.3 R1FInFw: Kч*X1Rv*tg(ArgNegResFw-90)",
+            "1.3 R1FInFw: KчPSD*X1Rv*tg(ArgNegResFw-90)",
             result.r1f_in_fw_reverse_intersection_phase,
             t("report.psb.forward_reverse_intersection_comment"),
             "1.3 R1FInFw = "
@@ -2650,7 +4057,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.forward_reverse_intersection"),
-            "1.3 R1FInFw: Kч*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90)",
+            "1.3 R1FInFw: KчPSD*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90)",
             result.r1f_in_fw_reverse_intersection_ground,
             t("report.psb.forward_reverse_intersection_comment"),
             "1.3 R1FInFw = "
@@ -2661,12 +4068,12 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.forward_reverse_intersection"),
-            "1.3 R1FInFw = max(Kч*X1Rv*tg(ArgNegResFw-90); "
-            "Kч*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90))",
+            "1.3 R1FInFw = max(KчPSD*X1Rv*tg(ArgNegResFw-90); "
+            "KчPSD*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90))",
             r1f_fw_13,
-            ("Kч*X1Rv*tg(ArgNegResFw-90)", result.r1f_in_fw_reverse_intersection_phase),
+            ("KчPSD*X1Rv*tg(ArgNegResFw-90)", result.r1f_in_fw_reverse_intersection_phase),
             (
-                "Kч*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90)",
+                "KчPSD*(X1Rv+(X0Rv-X1Rv)/3)*tg(ArgNegResFw-90)",
                 result.r1f_in_fw_reverse_intersection_ground,
             ),
         )
@@ -2686,7 +4093,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.reverse_coverage"),
-            "2.1 X1InRv: Kч*X1Rv",
+            "2.1 X1InRv: KчPSD*X1Rv",
             result.x1_in_rv_coverage_phase,
             t("report.psb.reverse_coverage_comment"),
             "2.1 X1InRv = "
@@ -2694,7 +4101,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.reverse_coverage"),
-            "2.1 X1InRv: Kч*(X1Rv+(X0Rv-X1Rv)/3)",
+            "2.1 X1InRv: KчPSD*(X1Rv+(X0Rv-X1Rv)/3)",
             result.x1_in_rv_coverage_ground,
             t("report.psb.reverse_coverage_comment"),
             "2.1 X1InRv = "
@@ -2704,14 +4111,14 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.reverse_coverage"),
-            "2.1 X1InRv = max(Kч*X1Rv; Kч*(X1Rv+(X0Rv-X1Rv)/3))",
+            "2.1 X1InRv = max(KчPSD*X1Rv; KчPSD*(X1Rv+(X0Rv-X1Rv)/3))",
             x1_rv_21,
-            ("Kч*X1Rv", result.x1_in_rv_coverage_phase),
-            ("Kч*(X1Rv+(X0Rv-X1Rv)/3)", result.x1_in_rv_coverage_ground),
+            ("KчPSD*X1Rv", result.x1_in_rv_coverage_phase),
+            ("KчPSD*(X1Rv+(X0Rv-X1Rv)/3)", result.x1_in_rv_coverage_ground),
         )
         add_condition(
             t("report.psb.reverse_coverage"),
-            "2.1 R1FInRv: Kч*(RFPPRv/2)",
+            "2.1 R1FInRv: KчPSD*(RFPPRv/2)",
             result.r1f_in_rv_coverage_phase,
             t("report.psb.reverse_coverage_comment"),
             "2.1 R1FInRv = "
@@ -2719,7 +4126,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.reverse_coverage"),
-            "2.1 R1FInRv: Kч*RFPERv",
+            "2.1 R1FInRv: KчPSD*RFPERv",
             result.r1f_in_rv_coverage_ground,
             t("report.psb.reverse_coverage_comment"),
             "2.1 R1FInRv = "
@@ -2727,14 +4134,14 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.reverse_coverage"),
-            "2.1 R1FInRv = max(Kч*(RFPPRv/2); Kч*RFPERv)",
+            "2.1 R1FInRv = max(KчPSD*(RFPPRv/2); KчPSD*RFPERv)",
             r1f_rv_21,
-            ("Kч*(RFPPRv/2)", result.r1f_in_rv_coverage_phase),
-            ("Kч*RFPERv", result.r1f_in_rv_coverage_ground),
+            ("KчPSD*(RFPPRv/2)", result.r1f_in_rv_coverage_phase),
+            ("KчPSD*RFPERv", result.r1f_in_rv_coverage_ground),
         )
         add_condition(
             t("report.psb.reverse_forward_intersection"),
-            "2.3 X1InRv: Kч*(RFPPFw/2)*tg(ArgDirRv)",
+            "2.3 X1InRv: KчPSD*(RFPPFw/2)*tg(ArgDirRv)",
             result.x1_in_rv_forward_intersection_phase,
             t("report.psb.reverse_forward_intersection_comment"),
             "2.3 X1InRv = "
@@ -2743,7 +4150,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.reverse_forward_intersection"),
-            "2.3 X1InRv: Kч*RFPEFw*tg(ArgDirRv)",
+            "2.3 X1InRv: KчPSD*RFPEFw*tg(ArgDirRv)",
             result.x1_in_rv_forward_intersection_ground,
             t("report.psb.reverse_forward_intersection_comment"),
             "2.3 X1InRv = "
@@ -2752,14 +4159,14 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.reverse_forward_intersection"),
-            "2.3 X1InRv = max(Kч*(RFPPFw/2)*tg(ArgDirRv); Kч*RFPEFw*tg(ArgDirRv))",
+            "2.3 X1InRv = max(KчPSD*(RFPPFw/2)*tg(ArgDirRv); KчPSD*RFPEFw*tg(ArgDirRv))",
             x1_rv_23,
-            ("Kч*(RFPPFw/2)*tg(ArgDirRv)", result.x1_in_rv_forward_intersection_phase),
-            ("Kч*RFPEFw*tg(ArgDirRv)", result.x1_in_rv_forward_intersection_ground),
+            ("KчPSD*(RFPPFw/2)*tg(ArgDirRv)", result.x1_in_rv_forward_intersection_phase),
+            ("KчPSD*RFPEFw*tg(ArgDirRv)", result.x1_in_rv_forward_intersection_ground),
         )
         add_condition(
             t("report.psb.reverse_forward_intersection"),
-            "2.3 R1FInRv: Kч*X1Fw*tg(ArgNegResRv-90)",
+            "2.3 R1FInRv: KчPSD*X1Fw*tg(ArgNegResRv-90)",
             result.r1f_in_rv_forward_intersection_phase,
             t("report.psb.reverse_forward_intersection_comment"),
             "2.3 R1FInRv = "
@@ -2768,7 +4175,7 @@ class MainWindow(QMainWindow):
         )
         add_condition(
             t("report.psb.reverse_forward_intersection"),
-            "2.3 R1FInRv: Kч*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90)",
+            "2.3 R1FInRv: KчPSD*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90)",
             result.r1f_in_rv_forward_intersection_ground,
             t("report.psb.reverse_forward_intersection_comment"),
             "2.3 R1FInRv = "
@@ -2779,12 +4186,12 @@ class MainWindow(QMainWindow):
         )
         add_summary(
             t("report.psb.reverse_forward_intersection"),
-            "2.3 R1FInRv = max(Kч*X1Fw*tg(ArgNegResRv-90); "
-            "Kч*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90))",
+            "2.3 R1FInRv = max(KчPSD*X1Fw*tg(ArgNegResRv-90); "
+            "KчPSD*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90))",
             r1f_rv_23,
-            ("Kч*X1Fw*tg(ArgNegResRv-90)", result.r1f_in_rv_forward_intersection_phase),
+            ("KчPSD*X1Fw*tg(ArgNegResRv-90)", result.r1f_in_rv_forward_intersection_phase),
             (
-                "Kч*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90)",
+                "KчPSD*(X1Fw+(X0Fw-X1Fw)/3)*tg(ArgNegResRv-90)",
                 result.r1f_in_rv_forward_intersection_ground,
             ),
         )
@@ -2932,7 +4339,7 @@ class MainWindow(QMainWindow):
             + self._html(self._stage_name_list(result.included_reverse_stage_names))
             + "</p>",
             "<p>"
-            + self._html(
+            + self._math_html(
                 t(
                     "report.psb.extremes",
                     k=self._report_number(result.sensitivity_factor),
@@ -3120,20 +4527,20 @@ class MainWindow(QMainWindow):
                 "RPFF/2",
                 "R1+RPFF/2",
                 "0",
-                "IF RES1>ArgNegRes THEN -tg((ArgNegRes-90)*pi/180)*X1 ELSE -RPFF/2",
+                "IF RES1>ArgNegRes THEN -tg((ArgNegRes-90))*X1 ELSE -RPFF/2",
                 "IF RES1>ArgNegRes THEN 0 ELSE -RPFF/2",
                 "IF RES1>ArgNegRes THEN 0 ELSE B33",
                 "0",
             ],
             "y": [
                 "0",
-                "-RPFF/2*tg(ArgDir*pi/180)",
+                "-RPFF/2*tg(ArgDir)",
                 "0",
                 "X1",
                 "X1",
                 "X1",
                 "IF RES1>ArgNegRes THEN 0 ELSE X1",
-                "IF RES1>ArgNegRes THEN 0 ELSE (1/tg((ArgNegRes-90)*pi/180))*(RPFF/2)",
+                "IF RES1>ArgNegRes THEN 0 ELSE (1/tg((ArgNegRes-90)))*(RPFF/2)",
                 "0",
             ],
         }
@@ -3152,20 +4559,20 @@ class MainWindow(QMainWindow):
                 "RFPE",
                 "(2*R1+R0)/3+RFPE",
                 "0",
-                "IF RES1>ArgNegRes THEN -tg((ArgNegRes-90)*pi/180)*X1 ELSE 0",
+                "IF RES1>ArgNegRes THEN -tg((ArgNegRes-90))*X1 ELSE 0",
                 "IF RES1>ArgNegRes THEN 0 ELSE -RFPE",
                 "IF RES1>ArgNegRes THEN 0 ELSE B33",
                 "0",
             ],
             "y": [
                 "0",
-                "-RFPE*tg(ArgDir*pi/180)",
+                "-RFPE*tg(ArgDir)",
                 "0",
                 "(2*X1+X0)/3",
                 "(2*X1+X0)/3",
                 "(2*X1+X0)/3",
                 "IF RES1>ArgNegRes THEN 0 ELSE (2*X1+X0)/3",
-                "IF RES1>ArgNegRes THEN 0 ELSE (1/tg((ArgNegRes-90)*pi/180))*RFPE",
+                "IF RES1>ArgNegRes THEN 0 ELSE (1/tg((ArgNegRes-90)))*RFPE",
                 "0",
             ],
         }
@@ -3219,25 +4626,29 @@ class MainWindow(QMainWindow):
         return f"{label}=min({values})={self._report_optional_number(selected)}"
 
     def _save_project(self) -> None:
-        if self._last_result is None:
-            self._calculate()
+        self._save_project_record(project_id=self._current_project_id)
+
+    def _save_project_as(self) -> None:
+        self._save_project_record(project_id=None)
+
+    def _save_project_record(self, project_id: int | None) -> None:
         with self._session_factory() as session:
             repository = ProjectRepository(session)
             self._current_project_id = repository.save(
                 self._project_data(),
                 results={"calculation": self._last_result},
-                project_id=self._current_project_id,
+                project_id=project_id,
             )
         self.statusBar().showMessage(self._translator.text("message.saved"), 5000)
 
     def _new_project(self) -> None:
         self._last_result = None
+        self._last_psb_blocking_result = None
         self._current_project_id = None
         self.project_name.clear()
         self.author.clear()
         self.source_data_widget.reset()
-        self.results_text.clear()
-        self.report_text.clear()
+        self._clear_results(update_lock=True)
 
     def _open_latest_project(self) -> None:
         dialog = ProjectManagerDialog(
@@ -3262,7 +4673,7 @@ class MainWindow(QMainWindow):
         self._retranslate()
         self.source_data_widget.from_dict(project.source_data)
         self._update_psd_phase_ground_tab()
-        self._calculate()
+        self._clear_results(update_lock=True)
 
     def _export_rx_diagram(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -3338,6 +4749,59 @@ class MainWindow(QMainWindow):
         export_html_to_docx(self._build_psd_engineering_report(), target)
         self.statusBar().showMessage(self._translator.text("message.exported"), 5000)
 
+    def _export_phs_settings_docx(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self._translator.text("dialog.export_word_title"),
+            str(Path.cwd() / "phs_settings.docx"),
+            self._translator.text("dialog.word_filter"),
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != ".docx":
+            target = target.with_suffix(".docx")
+        export_html_to_docx(self._phs_settings_export_html(), target)
+        self.statusBar().showMessage(self._translator.text("message.exported"), 5000)
+
+    def _phs_settings_export_html(self) -> str:
+        rows = []
+        for row in range(self.phs_settings_tab.rowCount()):
+            rows.append(
+                [
+                    self.phs_settings_tab.item(row, column).text()
+                    if self.phs_settings_tab.item(row, column) is not None
+                    else ""
+                    for column in range(self.phs_settings_tab.columnCount())
+                ]
+            )
+        return (
+            f"<h2>PHS - {self._html(self._translator.text('psd.settings'))}</h2>"
+            + self._simple_table(
+                [
+                    self._translator.text("table.name"),
+                    self._translator.text("report.psd_setting_value"),
+                    self._translator.text("psd.unit").capitalize(),
+                ],
+                rows,
+            )
+        )
+
+    def _export_phs_report_docx(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self._translator.text("dialog.export_word_title"),
+            str(Path.cwd() / "phs_report.docx"),
+            self._translator.text("dialog.word_filter"),
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != ".docx":
+            target = target.with_suffix(".docx")
+        export_html_to_docx(self._build_phs_report(), target)
+        self.statusBar().showMessage(self._translator.text("message.exported"), 5000)
+
     def _find_psd_report_next(self) -> None:
         self._find_psd_report(backward=False)
 
@@ -3370,32 +4834,208 @@ class MainWindow(QMainWindow):
             self._retranslate()
             self._redraw_psd_charts()
 
+    def _set_report_zoom(self, editor: QTextEdit, value: int) -> None:
+        font = editor.document().defaultFont()
+        font.setPointSizeF(10.0 * value / 100.0)
+        editor.document().setDefaultFont(font)
+
+    def _open_help(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._translator.text("menu.help"))
+        dialog.setMinimumSize(980, 720)
+        layout = QVBoxLayout(dialog)
+        search = QLineEdit()
+        search.setPlaceholderText(self._translator.text("help.search_placeholder"))
+        layout.addWidget(search)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        navigation = QListWidget()
+        content = QTextBrowser()
+        content.setOpenExternalLinks(False)
+        sections = self._help_sections()
+        for title, _html in sections:
+            navigation.addItem(QListWidgetItem(title))
+        splitter.addWidget(navigation)
+        splitter.addWidget(content)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 4)
+        layout.addWidget(splitter, 1)
+
+        def show_section(row: int) -> None:
+            if row < 0:
+                return
+            content.setHtml(sections[row][1])
+            content.moveCursor(QTextCursor.MoveOperation.Start)
+
+        def find_next() -> None:
+            text = search.text().strip()
+            if text and not content.find(text):
+                content.moveCursor(QTextCursor.MoveOperation.Start)
+                content.find(text)
+
+        navigation.currentRowChanged.connect(show_section)
+        search.returnPressed.connect(find_next)
+        if sections:
+            navigation.setCurrentRow(0)
+        dialog.exec()
+
+    def _help_sections(self) -> list[tuple[str, str]]:
+        t = self._translator.text
+        style = (
+            "<style>body{font-family:Segoe UI;color:#111827;font-size:11pt;}"
+            "h2{margin-top:0;} h3{margin-top:18px;} "
+            "p{line-height:1.45;} .formula{margin:6px 0 10px 18px;}"
+            "table{border-collapse:collapse;width:100%;margin:10px 0 18px 0;}"
+            "th,td{border:1px solid #cbd5e1;padding:6px;text-align:left;vertical-align:top;}"
+            "th{background:#eef2f7;}"
+            "</style>"
+        )
+        distance_points = self._help_table(
+            ["Точка", "x", "y"],
+            [
+                ["O", "0", "0"],
+                ["A`", "RF<sub>PP</sub>/2", "-RF<sub>PP</sub>/2*tg(ArgDir)"],
+                ["A", "RF<sub>PP</sub>/2", "0"],
+                ["B", "R<sub>1</sub>+RF<sub>PP</sub>/2", "X<sub>1</sub>"],
+                ["C", "0", "X<sub>1</sub>"],
+                ["C`", "IF RES1&gt;ArgNegRes; -tg(ArgNegRes-90)*X<sub>1</sub>; -RF<sub>PP</sub>/2", "X<sub>1</sub>"],
+                ["D", "IF RES1&gt;ArgNegRes; 0; -RF<sub>PP</sub>/2", "IF RES1&gt;ArgNegRes; 0; X<sub>1</sub>"],
+                ["D`", "IF RES1&gt;ArgNegRes; 0; B33", "IF RES1&gt;ArgNegRes; 0; RF<sub>PP</sub>/2/tg(ArgNegRes-90)"],
+                ["E", "0", "0"],
+            ],
+        )
+        phase_ground_points = self._help_table(
+            ["Точка", "x", "y"],
+            [
+                ["O", "0", "0"],
+                ["A`", "RF<sub>PE</sub>", "-RF<sub>PE</sub>*tg(ArgDir)"],
+                ["A", "RF<sub>PE</sub>", "0"],
+                ["B", "(2*R<sub>1</sub>+R<sub>0</sub>)/3 + RF<sub>PE</sub>", "(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["C", "0", "(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["C`", "IF RES1&gt;ArgNegRes; -tg(ArgNegRes-90)*X<sub>1</sub>; 0", "(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["D", "IF RES1&gt;ArgNegRes; 0; -RF<sub>PE</sub>", "IF RES1&gt;ArgNegRes; 0; (2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["D`", "IF RES1&gt;ArgNegRes; 0; B33", "IF RES1&gt;ArgNegRes; 0; RF<sub>PE</sub>/tg(ArgNegRes-90)"],
+                ["E", "0", "0"],
+            ],
+        )
+        psd_inner_points = self._help_table(
+            ["Точка", "x", "y"],
+            [
+                ["A", "0", "X<sub>1InFw</sub>"],
+                ["B", "R<sub>1LIn</sub>+R<sub>1FInFw</sub>", "X<sub>1InFw</sub>"],
+                ["C", "R<sub>1FInFw</sub>+X<sub>1InFw</sub>/tg(LineAngle)", "0"],
+                ["D", "R<sub>1FInFw</sub>", "0"],
+                ["G", "R<sub>1FInFw</sub>", "-X<sub>1InRv</sub>"],
+                ["I", "0", "-X<sub>1InRv</sub>"],
+                ["L", "-(R<sub>1FInRv</sub>+X<sub>1InRv</sub>/tg(LineAngle))", "-X<sub>1InRv</sub>"],
+                ["N", "-R<sub>1FInRv</sub>", "0"],
+                ["Q", "-R<sub>1FInRv</sub>", "X<sub>1InFw</sub>"],
+            ],
+        )
+        rld_points = self._help_table(
+            ["Зона", "Точка", "x", "y"],
+            [
+                ["RLD inner Fw", "AA", "RLd<sub>InFw</sub>*1,5", "(RLd<sub>InFw</sub>*1,5+∆RFw)*tg(ArgLd)"],
+                ["RLD inner Fw", "BB", "RLd<sub>InFw</sub>", "RLd<sub>OutFw</sub>*tg(ArgLd)"],
+                ["RLD inner Fw", "CC", "RLd<sub>InFw</sub>", "-RLd<sub>OutFw</sub>*tg(ArgLd)"],
+                ["RLD inner Rv", "EE", "-RLd<sub>InRv</sub>*1,5", "(RLd<sub>InRv</sub>*1,5+∆RFw)*tg(ArgLd)"],
+                ["RLD outer Fw", "AA`", "RLd<sub>OutFw</sub>*1,5", "RLd<sub>OutFw</sub>*1,5*tg(ArgLd)"],
+                ["RLD outer Rv", "EE`", "-RLd<sub>OutRv</sub>*1,5", "RLd<sub>OutRv</sub>*1,5*tg(ArgLd)"],
+            ],
+        )
+        sections = [
+            (
+                t("help.overview.title"),
+                style
+                + f"<h2>{self._html(t('help.overview.title'))}</h2>"
+                + f"<p>{self._html(t('help.overview.text'))}</p>",
+            ),
+            (
+                t("help.distance.title"),
+                style
+                + f"<h2>{self._html(t('help.distance.title'))}</h2>"
+                + "<p>1. Для кожної ступені зчитуються напрямок, X1, R1, X0, R0, RFPP, RFPE, TPP, TPE, ArgNegRes, ArgDir.</p>"
+                + "<p>2. Для прямих і зворотних ступенів будуються полігони на R-X площині. Зворотні ступені відображаються дзеркально.</p>"
+                + "<p class='formula'>RES1 = ATAN(X<sub>1</sub>/(-RF<sub>PP</sub>/2))*180/PI або 90/-90 при нульовому RF<sub>PP</sub>.</p>"
+                + "<p class='formula'>B33 = IF RES1 &gt; ArgNegRes; 0; -RF<sub>PP</sub>/2.</p>"
+                + "<h3>Координати зони фаза-фаза</h3>"
+                + distance_points
+                + "<h3>Координати зони фаза-земля</h3>"
+                + phase_ground_points,
+            ),
+            (
+                t("help.psd.title"),
+                style
+                + f"<h2>{self._html(t('help.psd.title'))}</h2>"
+                + "<p>1. До розрахунку PSD беруться ступені, для яких min(TPP, TPE) &lt;= 2,5 c, а також чутливий ступінь.</p>"
+                + "<p>2. Вибираються максимальні прямі та зворотні значення X<sub>1</sub>, X<sub>0</sub>, RF<sub>PP</sub>, RF<sub>PE</sub>, а також мінімальні кути напрямленості для відповідного напрямку.</p>"
+                + "<p class='formula'>X<sub>1InFw</sub> = max(K<sub>чPSD</sub>*X<sub>1Fw</sub>; K<sub>чPSD</sub>*(X<sub>1Fw</sub>+(X<sub>0Fw</sub>-X<sub>1Fw</sub>)/3); ...)</p>"
+                + "<p class='formula'>R<sub>1FInFw</sub> = max(K<sub>чPSD</sub>*RF<sub>PPFw</sub>/2; K<sub>чPSD</sub>*RF<sub>PEFw</sub>; ...)</p>"
+                + "<p>3. За результатами розрахунку будуються внутрішня і зовнішня зони PSD, а також внутрішня і зовнішня зони RLD. Пунктиром відображається лише внутрішня зона RLD.</p>"
+                + "<h3>Координати внутрішньої зони PSD</h3>"
+                + psd_inner_points
+                + "<h3>Координати зон вирізу від навантаження RLD</h3>"
+                + rld_points,
+            ),
+            (
+                t("help.phs.title"),
+                style
+                + f"<h2>{self._html(t('help.phs.title'))}</h2>"
+                + "<p>1. Для PHS використовується вибраний чутливий ступінь.</p>"
+                + "<p class='formula'>X<sub>1</sub> = max(K<sub>чPHS</sub>*X<sub>1Zm</sub>; K<sub>чPHS</sub>*(X<sub>1Zm</sub>*2/SQRT(3)); K<sub>чPHS</sub>*(RF<sub>FPPZm</sub>/(2*cosArgDir)*sin(30+ArgDir))).</p>"
+                + "<p class='formula'>X<sub>0</sub> = K<sub>чPHS</sub>*X<sub>0Zm</sub>.</p>"
+                + "<p class='formula'>RF<sub>RvPE</sub> = K<sub>чPHS</sub>*(X<sub>1Zm</sub>+(X<sub>0Zm</sub>-X<sub>1Zm</sub>)/3)*tg(ArgNegRes-90).</p>"
+                + "<p>2. Уставки вирізу від навантаження вибираються за мінімальним значенням між умовою відлаштування від навантаження та, якщо увімкнено, умовою з урахуванням PSD.</p>",
+            ),
+            (
+                t("help.graphs.title"),
+                style
+                + f"<h2>{self._html(t('help.graphs.title'))}</h2>"
+                + "<p>Графіки використовують R-X площину: вісь R відповідає активному опору, вісь X реактивному опору. Легенда дозволяє вмикати та вимикати окремі зони. Масштаб автоматично підлаштовується під видимі лінії.</p>"
+                + "<p>Для PSD і PHS графіки мають панель інструментів Matplotlib: масштабування, переміщення, скидання виду та експорт у графічний формат.</p>",
+            ),
+        ]
+        return sections
+
+    def _help_table(self, headers: list[str], rows: list[list[str]]) -> str:
+        html = ["<table><tr>"]
+        html.extend(f"<th>{self._html(header)}</th>" for header in headers)
+        html.append("</tr>")
+        for row in rows:
+            html.append("<tr>")
+            html.extend(f"<td>{cell}</td>" for cell in row)
+            html.append("</tr>")
+        html.append("</table>")
+        return "".join(html)
+
     def _retranslate(self) -> None:
         t = self._translator.text
         self.setWindowTitle(t("app.title"))
         self.file_menu.setTitle(t("menu.file"))
         self.new_action.setText(t("menu.new"))
         self.save_action.setText(t("menu.save"))
+        self.save_as_action.setText(t("menu.save_as"))
         self.open_action.setText(t("menu.open"))
         self.export_action.setText(t("menu.export"))
         self.exit_action.setText(t("menu.exit"))
-        self.settings_menu.setTitle(t("menu.settings"))
-        self.language_action.setText(t("menu.language"))
+        self.settings_action.setText(t("menu.settings"))
+        self.help_action.setText(t("menu.help"))
         self.tabs.setTabText(0, t("tab.inputs"))
         self.tabs.setTabText(1, t("tab.distance_zones"))
         self.tabs.setTabText(2, t("tab.psd"))
-        self.tabs.setTabText(3, t("tab.journal"))
-        self.distance_tabs.setTabText(0, t("psd.phase_phase_graph"))
+        self.tabs.setTabText(3, t("tab.phs"))
+        self.tabs.setTabText(4, t("tab.journal"))
+        self._retranslate_segmented_module(self.distance_tabs, t("tab.distance_zones"))
         self._update_distance_phase_ground_tab()
-        self.psd_tabs.setTabText(0, t("psd.settings"))
-        self.psd_tabs.setTabText(1, t("psd.phase_phase_graph"))
-        self.psd_tabs.setTabText(self.psd_tabs.indexOf(self.psd_report_tab), t("psd.report"))
+        self._retranslate_segmented_module(self.psd_tabs, "PSD")
+        self._retranslate_segmented_module(self.phs_tabs, "PHS")
         self.export_psd_report_button.setText(t("button.export_word"))
         self.export_psd_settings_button.setText(t("button.export_word"))
         self.export_psd_phase_phase_graph_button.setText(t("button.export_graph"))
         self.export_psd_phase_ground_graph_button.setText(t("button.export_graph"))
         self.export_distance_phase_phase_graph_button.setText(t("button.export_graph"))
         self.export_distance_phase_ground_graph_button.setText(t("button.export_graph"))
+        self.export_phs_settings_button.setText(t("button.export_word"))
+        self.export_phs_report_button.setText(t("button.export_word"))
         self.psd_report_search.setPlaceholderText(t("report.search_placeholder"))
         self.psd_report_find_prev_button.setText(t("button.find_previous"))
         self.psd_report_find_next_button.setText(t("button.find_next"))
@@ -3404,10 +5044,18 @@ class MainWindow(QMainWindow):
         self.project_group.setTitle(t("group.project"))
         self.project_name_label.setText(t("label.project_name"))
         self.author_label.setText(t("label.author"))
-        self.calculate_button.setText(t("button.calculate"))
+        self.calculate_button.setText(t("button.calculate_all"))
+        self.clear_results_button.setText(t("button.clear_results"))
         self.source_data_widget.retranslate()
         if self._last_result is not None:
-            self._calculate()
+            self._redraw_psd_charts()
+
+    def _retranslate_segmented_module(self, module: QWidget, title: str) -> None:
+        buttons = getattr(module, "_rel_psd_buttons", [])
+        for button in buttons:
+            key = button.property("translation_key")
+            if isinstance(key, str):
+                button.setText(self._translator.text(key))
 
     def _retranslate_psd_tables(self) -> None:
         self.psd_reach_table.setHorizontalHeaderLabels(
@@ -3417,6 +5065,14 @@ class MainWindow(QMainWindow):
                 self._translator.text("psd.unit").capitalize(),
             ]
         )
+        if hasattr(self, "phs_settings_tab"):
+            self.phs_settings_tab.setHorizontalHeaderLabels(
+                [
+                    self._translator.text("table.name"),
+                    self._translator.text("report.psd_setting_value"),
+                    self._translator.text("psd.unit").capitalize(),
+                ]
+            )
 
     def _rx_labels(self) -> dict[str, str]:
         t = self._translator.text
@@ -3448,3 +5104,4 @@ class MainWindow(QMainWindow):
         labels = self._rx_labels()
         labels["title"] = self._translator.text("distance.phase_ground_graph")
         return labels
+

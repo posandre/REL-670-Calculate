@@ -111,6 +111,22 @@ class ProjectManagerDialog(QDialog):
         project_id = self._selected_id()
         if project_id is None:
             return
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Question)
+        message.setWindowTitle(self._translator.text("project.delete"))
+        message.setText(self._translator.text("project.confirm_delete"))
+        yes_button = message.addButton(
+            self._translator.text("button.yes"),
+            QMessageBox.ButtonRole.YesRole,
+        )
+        no_button = message.addButton(
+            self._translator.text("button.no"),
+            QMessageBox.ButtonRole.NoRole,
+        )
+        message.setDefaultButton(no_button)
+        message.exec()
+        if message.clickedButton() is not yes_button:
+            return
         with self._session_factory() as session:
             repository = ProjectRepository(session)
             repository.delete(project_id)

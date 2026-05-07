@@ -14,14 +14,18 @@ QTabWidget::pane {
 
 QTabBar::tab {
     background: #e9edf3;
-    color: #1f2937;
-    padding: 8px 18px;
+    color: #4b5563;
+    padding: 12px 22px;
+    min-height: 28px;
     border: 1px solid #d7dde5;
     border-bottom: none;
 }
 
 QTabBar::tab:selected {
     background: #ffffff;
+    color: #111827;
+    font-weight: 700;
+    border-bottom: 3px solid #155e75;
 }
 
 QGroupBox {
@@ -44,6 +48,55 @@ QLineEdit, QDoubleSpinBox, QComboBox, QTableWidget, QTextEdit {
     border-radius: 4px;
     padding: 4px;
     color: #111827;
+}
+
+QLineEdit[invalid="true"],
+QComboBox[invalid="true"] {
+    border: 1px solid #dc2626;
+    background: #fff7f7;
+}
+
+QLabel#validationMessage {
+    color: #b91c1c;
+    padding: 4px 0;
+}
+
+QLabel#dialogQuestionTitle {
+    color: #111827;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+QLabel#dialogQuestionDetails {
+    color: #4b5563;
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+QLabel#infoSection {
+    color: #334155;
+    background: #eef6f9;
+    border: 1px solid #c7e3ec;
+    border-radius: 6px;
+    padding: 12px 14px;
+}
+
+QWidget#segmentedControl QPushButton {
+    background: transparent;
+    color: #4b5563;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 6px 4px 8px 4px;
+    font-weight: 500;
+    min-width: 0;
+}
+
+QWidget#segmentedControl QPushButton:checked {
+    background: transparent;
+    color: #111827;
+    border-bottom: 2px solid #155e75;
+    font-weight: 700;
 }
 
 QCheckBox {
@@ -73,7 +126,7 @@ QCheckBox::indicator:checked:hover {
     border-color: #0e7490;
 }
 
-QPushButton {
+QPushButton, QToolButton#calculateButton {
     background: #155e75;
     color: #ffffff;
     border: 1px solid #155e75;
@@ -82,13 +135,26 @@ QPushButton {
     font-weight: 600;
 }
 
-QPushButton:hover {
+QPushButton:hover, QToolButton#calculateButton:hover {
     background: #0e7490;
 }
 
-QPushButton:disabled {
+QPushButton:disabled, QToolButton#calculateButton:disabled {
     background: #9ca3af;
     border-color: #9ca3af;
+}
+
+QMenu {
+    padding: 6px 0;
+}
+
+QMenu::item {
+    padding: 8px 22px;
+}
+
+QMenu::item:selected {
+    background: #e6f3f7;
+    color: #111827;
 }
 
 QHeaderView::section {

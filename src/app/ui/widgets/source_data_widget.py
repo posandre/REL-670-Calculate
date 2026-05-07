@@ -129,6 +129,7 @@ class SourceDataWidget(QWidget):
         self.ktn_primary = QLineEdit()
         self.ktn_secondary = QLineEdit()
         self.sensitivity_factor = QLineEdit("1,10")
+        self.phs_sensitivity_factor = QLineEdit("1,20")
         self.delta_phi = QLineEdit("4")
         self.rejection_factor = QLineEdit("0,85")
         self.delta_r_fw_rv = QLineEdit()
@@ -174,6 +175,10 @@ class SourceDataWidget(QWidget):
         layout = QGridLayout(self.engineering_settings_group)
         self.protection_type_label = QLabel()
         self.sensitive_stage_label = QLabel()
+        self.sensitive_stage_error = QLabel()
+        self.sensitive_stage_error.setObjectName("validationMessage")
+        self.sensitive_stage_error.setWordWrap(True)
+        self.sensitive_stage_error.hide()
         self.sensitivity_factor_label = QLabel()
         self.delta_phi_label = QLabel()
         self.rejection_factor_label = QLabel()
@@ -196,6 +201,7 @@ class SourceDataWidget(QWidget):
             self.ktn_primary,
             self.ktn_secondary,
             self.sensitivity_factor,
+            self.phs_sensitivity_factor,
             self.delta_phi,
             self.rejection_factor,
             self.delta_r_fw_rv,
@@ -205,30 +211,36 @@ class SourceDataWidget(QWidget):
         layout.addWidget(self.protection_type_combo, 0, 1, 1, 5)
         layout.addWidget(self.sensitive_stage_label, 1, 0)
         layout.addWidget(self.sensitive_stage_combo, 1, 1, 1, 5)
-        layout.addWidget(self.ktc_primary_label, 2, 0)
-        layout.addWidget(self.ktc_primary, 2, 1)
-        layout.addWidget(self.ktc_primary_unit, 2, 2)
-        layout.addWidget(self.ktc_secondary_label, 2, 3)
-        layout.addWidget(self.ktc_secondary, 2, 4)
-        layout.addWidget(self.ktc_secondary_unit, 2, 5)
-        layout.addWidget(self.ktn_primary_label, 3, 0)
-        layout.addWidget(self.ktn_primary, 3, 1)
-        layout.addWidget(self.ktn_primary_unit, 3, 2)
-        layout.addWidget(self.ktn_secondary_label, 3, 3)
-        layout.addWidget(self.ktn_secondary, 3, 4)
-        layout.addWidget(self.ktn_secondary_unit, 3, 5)
-        layout.addWidget(self.sensitivity_factor_label, 4, 0)
-        layout.addWidget(self.sensitivity_factor, 4, 1, 1, 4)
-        layout.addWidget(self.sensitivity_factor_unit, 4, 5)
-        layout.addWidget(self.delta_phi_label, 5, 0)
-        layout.addWidget(self.delta_phi, 5, 1, 1, 4)
-        layout.addWidget(self.delta_phi_unit, 5, 5)
-        layout.addWidget(self.rejection_factor_label, 6, 0)
-        layout.addWidget(self.rejection_factor, 6, 1, 1, 4)
-        layout.addWidget(self.rejection_factor_unit, 6, 5)
-        layout.addWidget(self.delta_r_fw_rv_label, 7, 0)
-        layout.addWidget(self.delta_r_fw_rv, 7, 1, 1, 4)
-        layout.addWidget(self.delta_r_fw_rv_unit, 7, 5)
+        layout.addWidget(self.sensitive_stage_error, 2, 1, 1, 5)
+        layout.addWidget(self.ktc_primary_label, 3, 0)
+        layout.addWidget(self.ktc_primary, 3, 1)
+        layout.addWidget(self.ktc_primary_unit, 3, 2)
+        layout.addWidget(self.ktc_secondary_label, 3, 3)
+        layout.addWidget(self.ktc_secondary, 3, 4)
+        layout.addWidget(self.ktc_secondary_unit, 3, 5)
+        layout.addWidget(self.ktn_primary_label, 4, 0)
+        layout.addWidget(self.ktn_primary, 4, 1)
+        layout.addWidget(self.ktn_primary_unit, 4, 2)
+        layout.addWidget(self.ktn_secondary_label, 4, 3)
+        layout.addWidget(self.ktn_secondary, 4, 4)
+        layout.addWidget(self.ktn_secondary_unit, 4, 5)
+        self.phs_sensitivity_factor_label = QLabel()
+        self.phs_sensitivity_factor_unit = QLabel()
+        layout.addWidget(self.sensitivity_factor_label, 5, 0)
+        layout.addWidget(self.sensitivity_factor, 5, 1, 1, 4)
+        layout.addWidget(self.sensitivity_factor_unit, 5, 5)
+        layout.addWidget(self.phs_sensitivity_factor_label, 6, 0)
+        layout.addWidget(self.phs_sensitivity_factor, 6, 1, 1, 4)
+        layout.addWidget(self.phs_sensitivity_factor_unit, 6, 5)
+        layout.addWidget(self.delta_phi_label, 7, 0)
+        layout.addWidget(self.delta_phi, 7, 1, 1, 4)
+        layout.addWidget(self.delta_phi_unit, 7, 5)
+        layout.addWidget(self.rejection_factor_label, 8, 0)
+        layout.addWidget(self.rejection_factor, 8, 1, 1, 4)
+        layout.addWidget(self.rejection_factor_unit, 8, 5)
+        layout.addWidget(self.delta_r_fw_rv_label, 9, 0)
+        layout.addWidget(self.delta_r_fw_rv, 9, 1, 1, 4)
+        layout.addWidget(self.delta_r_fw_rv_unit, 9, 5)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(4, 1)
         return self.engineering_settings_group
@@ -274,11 +286,13 @@ class SourceDataWidget(QWidget):
         self.ktc_secondary_unit.setText(t("unit.ampere"))
         self.ktn_primary_unit.setText(t("unit.volt"))
         self.ktn_secondary_unit.setText(t("unit.volt"))
-        self.sensitivity_factor_label.setText(t("source.sensitivity_factor"))
+        self.sensitivity_factor_label.setText(t("source.sensitivity_factor_psd"))
+        self.phs_sensitivity_factor_label.setText(t("source.sensitivity_factor_phs"))
         self.delta_phi_label.setText(t("source.delta_phi"))
         self.rejection_factor_label.setText(t("source.rejection_factor"))
         self.delta_r_fw_rv_label.setText(t("source.delta_r_fw_rv"))
         self.sensitivity_factor_unit.setText(t("unit.relative"))
+        self.phs_sensitivity_factor_unit.setText(t("unit.relative"))
         self.delta_phi_unit.setText(t("unit.degree"))
         self.rejection_factor_unit.setText(t("unit.relative"))
         self.delta_r_fw_rv_unit.setText(t("unit.ohm"))
@@ -289,6 +303,8 @@ class SourceDataWidget(QWidget):
         self._update_sensitive_stage_options()
 
     def reset(self) -> None:
+        self.set_inputs_locked(False)
+        self.clear_validation_errors()
         for editor in (
             self.ktc_primary,
             self.ktc_secondary,
@@ -297,12 +313,164 @@ class SourceDataWidget(QWidget):
         ):
             editor.clear()
         self.sensitivity_factor.setText("1,10")
+        self.phs_sensitivity_factor.setText("1,20")
         self.delta_phi.setText("4")
         self.rejection_factor.setText("0,85")
         self._update_delta_r_fw_rv()
         self._configure_settings_table()
         self._configure_load_table()
         self._set_sensitive_stage_column(0)
+
+    def set_inputs_locked(self, locked: bool) -> None:
+        for widget in (
+            self.protection_type_combo,
+            self.sensitive_stage_combo,
+            self.ktc_primary,
+            self.ktc_secondary,
+            self.ktn_primary,
+            self.ktn_secondary,
+            self.sensitivity_factor,
+            self.phs_sensitivity_factor,
+            self.delta_phi,
+            self.rejection_factor,
+            self.settings_table,
+            self.load_table,
+        ):
+            widget.setEnabled(not locked)
+
+    def clear_validation_errors(self) -> None:
+        for editor in (
+            self.ktc_primary,
+            self.ktc_secondary,
+            self.ktn_primary,
+            self.ktn_secondary,
+            self.sensitivity_factor,
+            self.phs_sensitivity_factor,
+            self.delta_phi,
+            self.rejection_factor,
+        ):
+            editor.setProperty("invalid", False)
+            editor.setToolTip("")
+            editor.style().unpolish(editor)
+            editor.style().polish(editor)
+        self.sensitive_stage_combo.setProperty("invalid", False)
+        self.sensitive_stage_combo.setToolTip("")
+        self.sensitive_stage_combo.style().unpolish(self.sensitive_stage_combo)
+        self.sensitive_stage_combo.style().polish(self.sensitive_stage_combo)
+        if hasattr(self, "sensitive_stage_error"):
+            self.sensitive_stage_error.clear()
+            self.sensitive_stage_error.hide()
+        for table in (self.settings_table, self.load_table):
+            for row in range(table.rowCount()):
+                for column in range(table.columnCount()):
+                    item = table.item(row, column)
+                    if item is not None:
+                        editable = bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
+                        item.setBackground(EDITABLE_BACKGROUND if editable else LOCKED_BACKGROUND)
+                        item.setToolTip("")
+        self._highlight_sensitive_stage()
+
+    def validate_for_calculation(self, mode: str) -> list[str]:
+        self.clear_validation_errors()
+        errors: list[str] = []
+        required_fields = [
+            (self._translator.text("source.delta_phi"), self.delta_phi),
+            (self._translator.text("source.rejection_factor"), self.rejection_factor),
+        ]
+        if mode in {"all", "psd"}:
+            required_fields.append(
+                (
+                    self._translator.text("source.sensitivity_factor_psd"),
+                    self.sensitivity_factor,
+                )
+            )
+        if mode in {"all", "phs"}:
+            required_fields.append(
+                (
+                    self._translator.text("source.sensitivity_factor_phs"),
+                    self.phs_sensitivity_factor,
+                )
+            )
+
+        for label, editor in required_fields:
+            if self._line_number(editor) is None:
+                self._mark_line_invalid(editor, self._translator.text("validation.required"))
+                errors.append(f"{label}: {self._translator.text('validation.required')}")
+
+        stage_errors = self._validate_stage_tables(mode)
+        errors.extend(stage_errors)
+        if mode == "phs" and not self.sensitive_stage_combo.currentData():
+            message = self._translator.text("validation.sensitive_stage_required")
+            self._mark_combo_invalid(self.sensitive_stage_combo, message)
+            errors.append(f"{self._translator.text('source.sensitive_stage')}: {message}")
+        return errors
+
+    def _validate_stage_tables(self, mode: str) -> list[str]:
+        required_rows = ["X1", "R1", "RPFF"]
+        if self.protection_type_combo.currentIndex() == 0:
+            required_rows.extend(["X0", "R0", "RFPE"])
+        complete_stage_found = False
+        errors: list[str] = []
+        missing_cells: list[str] = []
+        for column in range(1, self.settings_table.columnCount()):
+            missing_for_stage = [
+                row_name
+                for row_name in required_rows
+                if self._setting_number(row_name, column) is None
+            ]
+            if not missing_for_stage:
+                complete_stage_found = True
+                continue
+            if any(
+                self._setting_number(row_name, column) is not None
+                for row_name in required_rows
+            ):
+                for row_name in missing_for_stage:
+                    self._mark_table_invalid(
+                        self.settings_table,
+                        self._settings_rows[row_name],
+                        column,
+                        self._translator.text("validation.required"),
+                    )
+                    missing_cells.append(
+                        f"{self._translator.text('source.step_template', number=column)}: {row_name}"
+                    )
+        if missing_cells:
+            errors.append(
+                self._translator.text("validation.missing_stage_values")
+                + " "
+                + "; ".join(missing_cells)
+            )
+        if not complete_stage_found:
+            errors.append(self._translator.text("validation.no_complete_stage"))
+        return errors
+
+    def _mark_line_invalid(self, editor: QLineEdit, message: str) -> None:
+        editor.setProperty("invalid", True)
+        editor.setToolTip(message)
+        editor.style().unpolish(editor)
+        editor.style().polish(editor)
+
+    def _mark_combo_invalid(self, editor: QComboBox, message: str) -> None:
+        editor.setProperty("invalid", True)
+        editor.setToolTip(message)
+        editor.style().unpolish(editor)
+        editor.style().polish(editor)
+        if editor is self.sensitive_stage_combo and hasattr(self, "sensitive_stage_error"):
+            self.sensitive_stage_error.setText(message)
+            self.sensitive_stage_error.show()
+
+    def _mark_table_invalid(
+        self,
+        table: QTableWidget,
+        row: int,
+        column: int,
+        message: str,
+    ) -> None:
+        item = table.item(row, column)
+        if item is not None:
+            item.setBackground(QColor("#fee2e2"))
+            item.setToolTip(message)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -314,6 +482,8 @@ class SourceDataWidget(QWidget):
                 "ktn_secondary": self.ktn_secondary.text(),
             },
             "sensitivity_factor": self.sensitivity_factor.text(),
+            "psd_sensitivity_factor": self.sensitivity_factor.text(),
+            "phs_sensitivity_factor": self.phs_sensitivity_factor.text(),
             "engineering_settings": {
                 "delta_phi_deg": self.delta_phi.text(),
                 "rejection_factor": self.rejection_factor.text(),
@@ -411,6 +581,12 @@ class SourceDataWidget(QWidget):
                         float(values["r1"]),
                         float(values["x1"]),
                     ),
+                    "compensated_load_angle_deg": compensated_load_angle_deg(
+                        float(values["r1"]),
+                        float(values["x1"]),
+                        float(values["r0"]),
+                        float(values["x0"]),
+                    ),
                     "time_sec": self._stage_time_seconds(column),
                 }
             )
@@ -418,6 +594,12 @@ class SourceDataWidget(QWidget):
 
     def sensitivity_factor_value(self) -> float | None:
         return self._line_number(self.sensitivity_factor)
+
+    def psd_sensitivity_factor_value(self) -> float | None:
+        return self._line_number(self.sensitivity_factor)
+
+    def phs_sensitivity_factor_value(self) -> float | None:
+        return self._line_number(self.phs_sensitivity_factor)
 
     def rejection_factor_value(self) -> float | None:
         return self._line_number(self.rejection_factor)
@@ -504,7 +686,12 @@ class SourceDataWidget(QWidget):
             self.ktc_secondary.setText(str(transformers.get("ktc_secondary", "")))
             self.ktn_primary.setText(str(transformers.get("ktn_primary", "")))
             self.ktn_secondary.setText(str(transformers.get("ktn_secondary", "")))
-        self.sensitivity_factor.setText(str(data.get("sensitivity_factor", "1,10")))
+        self.sensitivity_factor.setText(
+            str(data.get("psd_sensitivity_factor", data.get("sensitivity_factor", "1,10")))
+        )
+        self.phs_sensitivity_factor.setText(
+            str(data.get("phs_sensitivity_factor", "1,20"))
+        )
         engineering_settings = data.get("engineering_settings", {})
         if isinstance(engineering_settings, dict):
             self.delta_phi.setText(str(engineering_settings.get("delta_phi_deg", "4")))

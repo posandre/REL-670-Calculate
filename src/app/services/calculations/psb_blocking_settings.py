@@ -22,6 +22,7 @@ class PsbStageSettingInput:
     arg_dir_deg: float
     load_angle_deg: float | None
     time_sec: float | None
+    compensated_load_angle_deg: float | None = None
 
 
 @dataclass(frozen=True)
