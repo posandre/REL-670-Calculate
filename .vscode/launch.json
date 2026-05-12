@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+
+    {
+      "name": "Run REL-670-Calculate",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "app.main",
+      "cwd": "${workspaceFolder}/src",
+      "console": "integratedTerminal"
+    }
+  ]
+}

@@ -33,7 +33,7 @@
   "group.zones": "Distance Protection Zones",
   "group.psb": "Power Swing Blocking",
   "source.protection_type_group": "Protection type",
-  "source.engineering_settings": "Protection settings",
+  "source.engineering_settings": "General data",
   "source.protection_type": "Protection function",
   "source.sensitive_stage": "Sensitive stage",
   "source.not_selected": "Not selected",
@@ -90,7 +90,7 @@
   "label.outer_x": "Outer X, ohm",
   "label.angle": "Angle, deg",
   "button.calculate": "Calculate",
-  "button.calculate_all": "Calculate all",
+  "button.calculate_all": "Calculate",
   "button.calculate_psd": "Calculate PSD",
   "button.calculate_phs": "Calculate PHS",
   "button.clear_results": "Clear results",
@@ -267,5 +267,6 @@
   ,"validation.required": "Required field",
   "validation.no_complete_stage": "At least one complete stage is required for calculation.",
   "validation.missing_stage_values": "Required stage values are missing:",
+  "validation.missing_load_values": "Required load values are missing:",
   "validation.sensitive_stage_required": "Sensitive stage is required for PHS calculation."
 }

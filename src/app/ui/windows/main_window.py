@@ -5,9 +5,10 @@ from io import BytesIO
 from math import atan, ceil, cos, pi, sin, sqrt, tan
 from pathlib import Path
 from shutil import copy2
+import sys
 
 from PySide6.QtCore import QStandardPaths, Qt
-from PySide6.QtGui import QAction, QIcon, QTextCursor, QTextDocument
+from PySide6.QtGui import QAction, QFontMetrics, QIcon, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -170,7 +171,7 @@ class MainWindow(QMainWindow):
         self.help_action.triggered.connect(self._open_help)
 
     def _build_ui(self) -> None:
-        icon_path = Path(__file__).resolve().parents[4] / "resources" / "app_icon.ico"
+        icon_path = self._resource_path("resources/app_icon.ico")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
         self.project_name = QLineEdit()
@@ -214,11 +215,20 @@ class MainWindow(QMainWindow):
         self.psd_report_find_next_button.clicked.connect(self._find_psd_report_next)
         self.psd_report_find_prev_button = QPushButton()
         self.psd_report_find_prev_button.clicked.connect(self._find_psd_report_previous)
+        self.phs_report_search = QLineEdit()
+        self.phs_report_search.returnPressed.connect(self._find_phs_report_next)
+        self.phs_report_find_next_button = QPushButton()
+        self.phs_report_find_next_button.clicked.connect(self._find_phs_report_next)
+        self.phs_report_find_prev_button = QPushButton()
+        self.phs_report_find_prev_button.clicked.connect(self._find_phs_report_previous)
         self.export_psd_report_button = QPushButton()
         self.export_psd_report_button.clicked.connect(self._export_psd_report_docx)
         self.psd_report_zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.psd_report_zoom_slider.setRange(80, 160)
         self.psd_report_zoom_slider.setValue(100)
+        self.psd_report_zoom_slider.setFixedWidth(120)
+        self.psd_report_zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.psd_report_zoom_slider.setTickInterval(20)
         self.psd_report_zoom_slider.valueChanged.connect(
             lambda value: self._set_report_zoom(self.psd_report_text, value)
         )
@@ -247,6 +257,9 @@ class MainWindow(QMainWindow):
         self.phs_report_zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.phs_report_zoom_slider.setRange(80, 160)
         self.phs_report_zoom_slider.setValue(100)
+        self.phs_report_zoom_slider.setFixedWidth(120)
+        self.phs_report_zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.phs_report_zoom_slider.setTickInterval(20)
         self.phs_report_zoom_slider.valueChanged.connect(
             lambda value: self._set_report_zoom(self.phs_report_tab, value)
         )
@@ -266,6 +279,31 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("")
         self.tabs.currentChanged.connect(self._guard_result_tabs)
+
+    def _resource_path(self, relative_path: str) -> Path:
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        if frozen_root:
+            return Path(frozen_root) / relative_path
+        return Path(__file__).resolve().parents[4] / relative_path
+
+    def _route_panel_coordinates_to_status(self, panel: MatplotlibPanel) -> None:
+        if getattr(panel, "_rel_status_coordinates", False):
+            return
+
+        def show_message(message: str) -> None:
+            if message:
+                self.statusBar().showMessage(message)
+            else:
+                self.statusBar().clearMessage()
+
+        panel.toolbar.set_message = show_message  # type: ignore[method-assign]
+        panel._rel_status_coordinates = True  # type: ignore[attr-defined]
+
+    def _add_graph_export_button(self, panel: MatplotlibPanel, button: QPushButton) -> None:
+        if button.parent() is not panel.toolbar:
+            button.setParent(panel.toolbar)
+        panel.toolbar.addSeparator()
+        panel.toolbar.addWidget(button)
 
     def _build_input_tab(self) -> QWidget:
         page = QWidget()
@@ -398,37 +436,42 @@ class MainWindow(QMainWindow):
     def _build_phs_settings_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
-        toolbar.addWidget(self.export_phs_settings_button)
-        layout.addLayout(toolbar)
         layout.addWidget(self.phs_settings_tab)
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        footer.addWidget(self.export_phs_settings_button)
+        footer.addStretch()
+        layout.addLayout(footer)
         return page
 
     def _build_phs_graph_tab(self, panel: MatplotlibPanel) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
+        self._route_panel_coordinates_to_status(panel)
         export_button = QPushButton(self._translator.text("button.export_graph"))
         export_button.clicked.connect(
             lambda checked=False, target=panel: self._export_graph_panel(target, "phs_graph")
         )
-        toolbar.addWidget(export_button)
-        layout.addLayout(toolbar)
+        self._add_graph_export_button(panel, export_button)
         layout.addWidget(panel)
         return page
 
     def _build_phs_report_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        toolbar.addWidget(self.phs_report_search)
+        toolbar.addWidget(self.phs_report_find_prev_button)
+        toolbar.addWidget(self.phs_report_find_next_button)
+        toolbar.addStretch()
+        toolbar.addWidget(self.export_phs_report_button)
+        layout.addLayout(toolbar)
         layout.addWidget(self.phs_report_tab)
         footer = QHBoxLayout()
         footer.setSpacing(10)
-        footer.addWidget(self.export_phs_report_button)
         footer.addStretch()
+        footer.addSpacing(20)
         footer.addWidget(QLabel(self._translator.text("report.zoom")))
         footer.addWidget(self.phs_report_zoom_slider)
         layout.addLayout(footer)
@@ -475,12 +518,13 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.psd_report_find_prev_button)
         controls.addWidget(self.psd_report_find_next_button)
         controls.addStretch()
+        controls.addWidget(self.export_psd_report_button)
         layout.addLayout(controls)
         layout.addWidget(self.psd_report_text)
         footer = QHBoxLayout()
         footer.setSpacing(10)
-        footer.addWidget(self.export_psd_report_button)
         footer.addStretch()
+        footer.addSpacing(20)
         footer.addWidget(QLabel(self._translator.text("report.zoom")))
         footer.addWidget(self.psd_report_zoom_slider)
         layout.addLayout(footer)
@@ -520,6 +564,7 @@ class MainWindow(QMainWindow):
             button.setCheckable(True)
             button.setAutoExclusive(True)
             button.setProperty("translation_key", key)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda checked=False, i=index: self._select_segment(stack, i, callback))
             segmented_layout.addWidget(button)
             stack.addWidget(widget)
@@ -538,59 +583,67 @@ class MainWindow(QMainWindow):
         if callback is not None:
             callback(index)  # type: ignore[operator]
 
+    def _fit_segment_button_width(self, button: QPushButton) -> None:
+        bold_font = button.font()
+        bold_font.setBold(True)
+        text_width = QFontMetrics(bold_font).horizontalAdvance(button.text())
+        width = text_width + 22
+        button.setMinimumWidth(width)
+        button.setMaximumWidth(width)
+
     def _build_distance_phase_phase_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
-        toolbar.addWidget(self.export_distance_phase_phase_graph_button)
-        layout.addLayout(toolbar)
+        self._route_panel_coordinates_to_status(self.distance_phase_phase_panel)
+        self._add_graph_export_button(
+            self.distance_phase_phase_panel,
+            self.export_distance_phase_phase_graph_button,
+        )
         layout.addWidget(self.distance_phase_phase_panel)
         return page
 
     def _build_distance_phase_ground_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
-        toolbar.addWidget(self.export_distance_phase_ground_graph_button)
-        layout.addLayout(toolbar)
+        self._route_panel_coordinates_to_status(self.distance_phase_ground_panel)
+        self._add_graph_export_button(
+            self.distance_phase_ground_panel,
+            self.export_distance_phase_ground_graph_button,
+        )
         layout.addWidget(self.distance_phase_ground_panel)
         return page
 
     def _build_psd_settings_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
-        toolbar.addWidget(self.export_psd_settings_button)
         self.psd_reach_table = self._psd_reach_table()
-        layout.addLayout(toolbar)
         layout.addWidget(self.psd_reach_table)
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        footer.addWidget(self.export_psd_settings_button)
+        footer.addStretch()
+        layout.addLayout(footer)
         return page
 
     def _build_psd_phase_phase_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
-        toolbar.addWidget(self.export_psd_phase_phase_graph_button)
-        layout.addLayout(toolbar)
+        self._route_panel_coordinates_to_status(self.psd_phase_phase_panel)
+        self._add_graph_export_button(
+            self.psd_phase_phase_panel,
+            self.export_psd_phase_phase_graph_button,
+        )
         layout.addWidget(self.psd_phase_phase_panel)
         return page
 
     def _build_psd_phase_ground_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-        toolbar.addStretch()
-        toolbar.addWidget(self.export_psd_phase_ground_graph_button)
-        layout.addLayout(toolbar)
+        self._route_panel_coordinates_to_status(self.psd_phase_ground_panel)
+        self._add_graph_export_button(
+            self.psd_phase_ground_panel,
+            self.export_psd_phase_ground_graph_button,
+        )
         layout.addWidget(self.psd_phase_ground_panel)
         return page
 
@@ -741,23 +794,31 @@ class MainWindow(QMainWindow):
         )
 
     def _calculate_all(self) -> None:
-        if self._calculate("psd"):
-            self._calculate_phs()
+        errors = self.source_data_widget.validate_for_calculation("all")
+        if errors:
+            self.validation_message.setText("\n".join(errors))
+            self.validation_message.show()
+            self.statusBar().showMessage(self._translator.text("message.validation_failed"), 5000)
+            return
+        self.validation_message.hide()
+        if self._calculate("psd", skip_validation=True):
+            self._calculate_phs(skip_validation=True)
 
     def _calculate_psd(self) -> None:
         self._calculate("psd")
 
-    def _calculate_phs(self) -> None:
-        errors = self.source_data_widget.validate_for_calculation("phs")
-        if errors:
-            self.validation_message.setText("\n".join(errors))
-            self.validation_message.show()
-            self.statusBar().showMessage(
-                self._translator.text("message.validation_failed"),
-                5000,
-            )
-            return
-        self.validation_message.hide()
+    def _calculate_phs(self, *, skip_validation: bool = False) -> None:
+        if not skip_validation:
+            errors = self.source_data_widget.validate_for_calculation("phs")
+            if errors:
+                self.validation_message.setText("\n".join(errors))
+                self.validation_message.show()
+                self.statusBar().showMessage(
+                    self._translator.text("message.validation_failed"),
+                    5000,
+                )
+                return
+            self.validation_message.hide()
         if not self._psd_calculated:
             QMessageBox.warning(
                 self,
@@ -767,24 +828,33 @@ class MainWindow(QMainWindow):
             return
         use_psd_zone = self._confirm_use_psd_for_phs()
         progress = self._create_progress_dialog(self._translator.text("progress.phs"))
-        self._advance_progress(progress, self._translator.text("progress.phs_stub"), 1)
-        self._last_phs_result = self._calculate_phs_selector_settings(
-            use_psd_zone=use_psd_zone
-        )
-        if self._last_phs_result is None:
+        try:
+            self._advance_progress(progress, self._translator.text("progress.phs_stub"), 1)
+            self._last_phs_result = self._calculate_phs_selector_settings(
+                use_psd_zone=use_psd_zone
+            )
+            if self._last_phs_result is None:
+                progress.close()
+                QMessageBox.warning(
+                    self,
+                    self._translator.text("phs.title"),
+                    self._translator.text("message.validation_failed"),
+                )
+                return
+            self._update_phs_settings_table()
+            self._plot_phs_graphs()
+            self._phs_calculated = True
+            self.phs_report_tab.setHtml(self._build_phs_report())
+            self.report_text.setHtml(self._build_zone_construction_report())
+            self._advance_progress(progress, self._translator.text("progress.done"), 2)
+        except Exception as exc:
             progress.close()
-            QMessageBox.warning(
+            QMessageBox.critical(
                 self,
                 self._translator.text("phs.title"),
-                self._translator.text("message.validation_failed"),
+                str(exc),
             )
             return
-        self._update_phs_settings_table()
-        self._plot_phs_graphs()
-        self._phs_calculated = True
-        self.phs_report_tab.setHtml(self._build_phs_report())
-        self.report_text.setHtml(self._build_zone_construction_report())
-        self._advance_progress(progress, self._translator.text("progress.done"), 2)
         progress.close()
         self._update_result_tab_state()
         self.statusBar().showMessage(self._translator.text("message.calculated"), 5000)
@@ -861,6 +931,7 @@ class MainWindow(QMainWindow):
             button.setCheckable(True)
             button.setAutoExclusive(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             button.clicked.connect(
                 lambda checked=False, selected=index: stack.setCurrentIndex(selected)
             )
@@ -933,14 +1004,15 @@ class MainWindow(QMainWindow):
         panel.redraw()
         return panel
 
-    def _calculate(self, mode: str = "all") -> bool:
-        errors = self.source_data_widget.validate_for_calculation(mode)
-        if errors:
-            self.validation_message.setText("\n".join(errors))
-            self.validation_message.show()
-            self.statusBar().showMessage(self._translator.text("message.validation_failed"), 5000)
-            return False
-        self.validation_message.hide()
+    def _calculate(self, mode: str = "all", *, skip_validation: bool = False) -> bool:
+        if not skip_validation:
+            errors = self.source_data_widget.validate_for_calculation(mode)
+            if errors:
+                self.validation_message.setText("\n".join(errors))
+                self.validation_message.show()
+                self.statusBar().showMessage(self._translator.text("message.validation_failed"), 5000)
+                return False
+            self.validation_message.hide()
         progress = self._create_progress_dialog(
             self._translator.text(
                 "progress.all" if mode == "all" else "progress.psd"
@@ -1236,6 +1308,27 @@ class MainWindow(QMainWindow):
         )
 
     def _phs_stage_input(self) -> PhsStageInput | None:
+        selected = self._selected_sensitive_stage()
+        if selected is None:
+            return None
+        return PhsStageInput(
+            name=str(selected["name"]),
+            x1=float(selected["x1"]),
+            r1=float(selected["r1"]),
+            x0=float(selected["x0"]),
+            r0=float(selected["r0"]),
+            rfpp=float(selected["rfpp"]),
+            rfpe=float(selected["rfpe"]),
+            arg_dir_deg=float(selected["arg_dir_deg"]),
+            arg_neg_res_deg=float(selected["arg_neg_res_deg"]),
+            load_angle_ground_deg=(
+                float(selected["compensated_load_angle_deg"])
+                if selected["compensated_load_angle_deg"] is not None
+                else None
+            ),
+        )
+
+    def _selected_sensitive_stage(self) -> dict[str, object] | None:
         stages = self.source_data_widget.psb_stage_setting_inputs()
         selected_column = int(self.source_data_widget.sensitive_stage_combo.currentData() or 0)
         selected_name = (
@@ -1256,22 +1349,7 @@ class MainWindow(QMainWindow):
             if not forward_stages:
                 return None
             selected = max(forward_stages, key=lambda stage: float(stage["x1"]))
-        return PhsStageInput(
-            name=str(selected["name"]),
-            x1=float(selected["x1"]),
-            r1=float(selected["r1"]),
-            x0=float(selected["x0"]),
-            r0=float(selected["r0"]),
-            rfpp=float(selected["rfpp"]),
-            rfpe=float(selected["rfpe"]),
-            arg_dir_deg=float(selected["arg_dir_deg"]),
-            arg_neg_res_deg=float(selected["arg_neg_res_deg"]),
-            load_angle_ground_deg=(
-                float(selected["compensated_load_angle_deg"])
-                if selected["compensated_load_angle_deg"] is not None
-                else None
-            ),
-        )
+        return selected
 
     def _update_phs_settings_table(self) -> None:
         result = self._last_phs_result
@@ -1314,12 +1392,15 @@ class MainWindow(QMainWindow):
             return
 
         phase_phase_points = [
-            (0.0, 0.0),
             (result.rffw_pp / 2.0, 0.0),
-            (result.rffw_pp / 2.0, result.x1),
-            (-result.rfrv_pp / 2.0, result.x1),
-            (-result.rfrv_pp / 2.0, 0.0),
-            (0.0, 0.0),
+            (result.rffw_pp / 2.0 + result.x1 / tan(pi / 3.0), result.x1),
+            (0.0, result.x1),
+            (-result.rffw_pp / 2.0, result.x1),
+            (-result.rffw_pp / 2.0, 0.0),
+            (-(result.rffw_pp / 2.0 + result.x1 / tan(pi / 3.0)), -result.x1),
+            (0.0, -result.x1),
+            (result.rffw_pp / 2.0, -result.x1),
+            (result.rffw_pp / 2.0, 0.0),
         ]
         phase_phase_3ph_points = [
             (0.0, 0.0),
@@ -1329,13 +1410,17 @@ class MainWindow(QMainWindow):
             (-result.rfrv_pp, 0.0),
             (0.0, 0.0),
         ]
+        ground_reach = (2.0 * result.x1 + result.x0) / 3.0
         phase_ground_points = [
-            (0.0, 0.0),
             (result.rffw_pe, 0.0),
-            (result.rffw_pe, result.x0),
-            (-result.rfrv_pe, result.x0),
+            (result.rffw_pe + ground_reach / tan(pi / 3.0), ground_reach),
+            (0.0, ground_reach),
+            (-result.rfrv_pe, ground_reach),
             (-result.rfrv_pe, 0.0),
-            (0.0, 0.0),
+            (-(result.rfrv_pe + ground_reach / tan(pi / 3.0)), -ground_reach),
+            (0.0, -ground_reach),
+            (result.rffw_pe, -ground_reach),
+            (result.rffw_pe, 0.0),
         ]
         load_cut_points = [
             (result.rld_fw, result.rld_fw * tan(result.arg_ld * pi / 180.0)),
@@ -1353,9 +1438,167 @@ class MainWindow(QMainWindow):
             xs = [point[0] for point in points]
             ys = [point[1] for point in points]
             axis.plot(xs, ys, linewidth=1.0, label=label)
+            point_targets: list[tuple[str, float, float]] = []
+            axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
+            for point_label, x_value, y_value in zip(
+                self._phs_point_labels_for_panel(panel, len(points)),
+                xs,
+                ys,
+                strict=False,
+            ):
+                point_targets.append((f"{label} {point_label}", x_value, y_value))
+                if self._show_point_labels:
+                    axis.annotate(
+                        point_label,
+                        (x_value, y_value),
+                        textcoords="offset points",
+                        xytext=(5, 5),
+                        fontsize=8,
+                    )
+            self._plot_sensitive_distance_zone_on_phs(panel)
+            self._plot_phs_ld_zones(axis, result)
+            for ld_label, ld_points in self._phs_ld_overlays(result):
+                for point_label, x_value, y_value in ld_points:
+                    point_targets.append((f"{ld_label} {point_label}", x_value, y_value))
             self._autoscale_visible(axis)
+            self._shade_rld_regions(
+                axis,
+                self._phs_ld_overlays(result),
+                {"Ld Fw": True, "Ld Rv": True},
+            )
             axis.legend(loc="upper left")
+            self._connect_phs_point_tooltip(panel, point_targets)
             panel.redraw()
+
+    def _phs_point_labels_for_panel(self, panel: MatplotlibPanel, count: int) -> list[str]:
+        if panel is self.phs_phase_phase_2ph_panel:
+            return ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "II"][:count]
+        if panel is self.phs_phase_ground_panel:
+            return ["AA''", "BB''", "CC''", "DD''", "EE''", "FF''", "GG''", "HH''", "II''"][:count]
+        return self._point_labels_for_count(count)
+
+    def _connect_phs_point_tooltip(
+        self,
+        panel: MatplotlibPanel,
+        targets: list[tuple[str, float, float]],
+    ) -> None:
+        cid = getattr(panel, "_rel_phs_motion_cid", None)
+        if cid is not None:
+            panel.canvas.mpl_disconnect(cid)
+        panel._rel_phs_motion_cid = self._connect_point_tooltip(panel, targets)  # type: ignore[attr-defined]
+
+    def _phs_ld_overlays(self, result: PhsSelectorResult) -> list[OverlayPolygon]:
+        return self._ld_overlays(result.rld_fw, result.rld_rv, result.arg_ld)
+
+    def _ld_overlays(
+        self,
+        rld_fw: float,
+        rld_rv: float,
+        arg_ld_deg: float,
+    ) -> list[OverlayPolygon]:
+        tan_arg = tan(arg_ld_deg * pi / 180.0)
+        return [
+            (
+                "Ld Fw",
+                (
+                    ("A", 2.0 * rld_fw, 2.0 * rld_fw * tan_arg),
+                    ("B", rld_fw, rld_fw * tan_arg),
+                    ("C", rld_fw, 0.0),
+                    ("D", rld_fw, -rld_fw * tan_arg),
+                    ("E", 2.0 * rld_fw, -2.0 * rld_fw * tan_arg),
+                ),
+            ),
+            (
+                "Ld Rv",
+                (
+                    ("A'", -2.0 * rld_rv, -2.0 * rld_rv * tan_arg),
+                    ("B'", -rld_rv, -rld_rv * tan_arg),
+                    ("C'", -rld_rv, 0.0),
+                    ("D'", -rld_rv, rld_rv * tan_arg),
+                    ("E'", -2.0 * rld_rv, 2.0 * rld_rv * tan_arg),
+                ),
+            ),
+        ]
+
+    def _plot_phs_ld_zones(self, axis, result: PhsSelectorResult) -> None:  # type: ignore[no-untyped-def]
+        for label, points in self._phs_ld_overlays(result):
+            xs = [point[1] for point in points]
+            ys = [point[2] for point in points]
+            axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                color=self._zone_line_color(label),
+                label=label,
+            )
+
+    def _plot_sensitive_distance_zone_on_phs(self, panel: MatplotlibPanel) -> None:
+        stage = self._selected_sensitive_stage()
+        if stage is None:
+            return
+        try:
+            if panel is self.phs_phase_ground_panel:
+                zones = phase_ground_zone_polygons(
+                    [
+                        PhaseGroundStageInput(
+                            name=str(stage["name"]),
+                            is_forward=bool(stage["is_forward"]),
+                            x1=float(stage["x1"]),
+                            r1=float(stage["r1"]),
+                            x0=float(stage["x0"]),
+                            r0=float(stage["r0"]),
+                            rpff=float(stage["rfpp"]),
+                            rfpe=float(stage["rfpe"]),
+                            arg_neg_res_deg=float(stage["arg_neg_res_deg"]),
+                            arg_dir_deg=float(stage["arg_dir_deg"]),
+                        )
+                    ]
+                )
+            else:
+                zones = phase_phase_zone_polygons(
+                    [
+                        PhasePhaseStageInput(
+                            name=str(stage["name"]),
+                            is_forward=bool(stage["is_forward"]),
+                            x1=float(stage["x1"]),
+                            r1=float(stage["r1"]),
+                            rpff=float(stage["rfpp"]),
+                            arg_neg_res_deg=float(stage["arg_neg_res_deg"]),
+                            arg_dir_deg=float(stage["arg_dir_deg"]),
+                        )
+                    ]
+                )
+        except (TypeError, ValueError):
+            return
+        if not zones:
+            return
+        zone = zones[0]
+        xs = [point[0] for point in zone.points]
+        ys = [point[1] for point in zone.points]
+        panel.axis.plot(
+            xs,
+            ys,
+            linewidth=1.0,
+            color="#475569",
+            label="Чутлива зона",
+        )
+
+    def _shade_phs_load_cut(self, axis, result: PhsSelectorResult) -> None:  # type: ignore[no-untyped-def]
+        color = "#16697a"
+        tan_arg = tan(result.arg_ld * pi / 180.0)
+        inner_fw = (
+            ("AA", result.rld_fw, result.rld_fw * tan_arg),
+            ("BB", result.rld_fw, -result.rld_fw * tan_arg),
+        )
+        inner_rv = (
+            ("EE", -result.rld_rv, result.rld_rv * tan_arg),
+            ("FF", -result.rld_rv, -result.rld_rv * tan_arg),
+        )
+        x_min, x_max = axis.get_xlim()
+        for points, edge_x in ((inner_fw, x_max), (inner_rv, x_min)):
+            xs = [points[0][1], edge_x, edge_x, points[1][1]]
+            ys = [points[0][2], points[0][2], points[1][2], points[1][2]]
+            axis.fill(xs, ys, color=color, alpha=0.10, linewidth=0, label="_nolegend_", zorder=0)
 
     def _psd_overlay_polygons(
         self,
@@ -1497,10 +1740,10 @@ class MainWindow(QMainWindow):
         overlays = [
             ("PSD inner", inner),
             ("PSD outer", outer),
-            ("RLD inner Fw", rld_inner_fw),
-            ("RLD inner Rv", rld_inner_rv),
-            ("RLD outer Fw", rld_outer_fw),
-            ("RLD outer Rv", rld_outer_rv),
+            ("RLD inner", rld_inner_fw),
+            ("RLD inner", rld_inner_rv),
+            ("RLD outer", rld_outer_fw),
+            ("RLD outer", rld_outer_rv),
         ]
         load_cut = result.load_cut
         if load_cut is not None and load_cut.rejection_factor is not None:
@@ -1560,6 +1803,19 @@ class MainWindow(QMainWindow):
     def _zone_line_style(self, label: str) -> str:
         return "--" if label.startswith("RLD inner") else "-"
 
+    def _zone_line_color(self, label: str) -> str | None:
+        if label.startswith("RLD "):
+            return "#16697a"
+        if label.startswith("Ld "):
+            return "#7c3aed"
+        return None
+
+    def _legend_label_for_group(self, label: str, plotted_labels: set[str]) -> str:
+        if label in plotted_labels:
+            return "_nolegend_"
+        plotted_labels.add(label)
+        return label
+
     def _plot_psd_phase_phase_zones(self) -> None:
         stages = [
             PhasePhaseStageInput(**stage)
@@ -1584,7 +1840,7 @@ class MainWindow(QMainWindow):
             line_by_label[zone.name] = line
             if visible:
                 point_labels = self._point_labels_for_count(len(zone.points))
-                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     point_labels,
                     xs,
@@ -1602,22 +1858,27 @@ class MainWindow(QMainWindow):
                     self._psd_phase_phase_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
+        overlay_colors: dict[str, str] = {}
+        plotted_overlay_labels: set[str] = set()
         for label, points in self._psd_overlay_polygons():
             self._psd_phase_phase_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
+            color = overlay_colors.get(label) or self._zone_line_color(label)
             line = axis.plot(
                 xs,
                 ys,
                 linewidth=1.0,
                 linestyle=self._zone_line_style(label),
-                label=label,
+                label=self._legend_label_for_group(label, plotted_overlay_labels),
+                color=color,
             )[0]
+            overlay_colors.setdefault(label, line.get_color())
             visible = self._psd_phase_phase_zone_visibility.get(label, True)
             line.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=9, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -1631,6 +1892,16 @@ class MainWindow(QMainWindow):
                         (f"{label} {point_label}", x_value, y_value)
                     )
         self._autoscale_visible(axis)
+        self._shade_psd_gap_regions(
+            axis,
+            self._psd_overlay_polygons(),
+            self._psd_phase_phase_zone_visibility,
+        )
+        self._shade_rld_regions(
+            axis,
+            self._psd_overlay_polygons(),
+            self._psd_phase_phase_zone_visibility,
+        )
         legend = axis.legend(loc="upper left") if line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
@@ -1669,7 +1940,7 @@ class MainWindow(QMainWindow):
             line.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
-                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
                     xs,
@@ -1687,22 +1958,27 @@ class MainWindow(QMainWindow):
                     self._psd_phase_ground_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
+        overlay_colors: dict[str, str] = {}
+        plotted_overlay_labels: set[str] = set()
         for label, points in self._psd_overlay_polygons():
             self._psd_phase_ground_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
+            color = overlay_colors.get(label) or self._zone_line_color(label)
             line = axis.plot(
                 xs,
                 ys,
                 linewidth=1.0,
                 linestyle=self._zone_line_style(label),
-                label=label,
+                label=self._legend_label_for_group(label, plotted_overlay_labels),
+                color=color,
             )[0]
+            overlay_colors.setdefault(label, line.get_color())
             visible = self._psd_phase_ground_zone_visibility.get(label, True)
             line.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=9, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -1716,6 +1992,16 @@ class MainWindow(QMainWindow):
                         (f"{label} {point_label}", x_value, y_value)
                     )
         self._autoscale_visible(axis)
+        self._shade_psd_gap_regions(
+            axis,
+            self._psd_overlay_polygons(),
+            self._psd_phase_ground_zone_visibility,
+        )
+        self._shade_rld_regions(
+            axis,
+            self._psd_overlay_polygons(),
+            self._psd_phase_ground_zone_visibility,
+        )
         legend = axis.legend(loc="upper left") if line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
@@ -1744,6 +2030,22 @@ class MainWindow(QMainWindow):
             if label.startswith("RLD outer")
         ]
 
+    def _distance_ld_overlays(self) -> list[OverlayPolygon]:
+        if self._last_phs_result is None:
+            return []
+        result = self._last_phs_result
+        if (
+            result.rld_fw_load is None
+            or result.rld_rv_load is None
+            or result.arg_ld_load is None
+        ):
+            return []
+        return self._ld_overlays(
+            float(result.rld_fw_load),
+            float(result.rld_rv_load),
+            float(result.arg_ld_load),
+        )
+
     def _plot_distance_phase_phase_zones(self) -> None:
         if self._last_result is None:
             axis = self.distance_phase_phase_panel.axis
@@ -1769,9 +2071,18 @@ class MainWindow(QMainWindow):
             line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
             visible = self._distance_phase_phase_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
+            fill = axis.fill(
+                xs,
+                ys,
+                color=line.get_color(),
+                alpha=0.12,
+                linewidth=0,
+                label="_nolegend_",
+            )[0]
+            fill.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
-                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
                     xs,
@@ -1789,22 +2100,28 @@ class MainWindow(QMainWindow):
                     self._distance_phase_phase_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
-        for label, points in self._outer_load_cut_overlays():
+        overlay_colors: dict[str, str] = {}
+        plotted_overlay_labels: set[str] = set()
+        for label, points in self._distance_ld_overlays():
             self._distance_phase_phase_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
+            color = overlay_colors.get(label) or self._zone_line_color(label)
             line = axis.plot(
                 xs,
                 ys,
                 linewidth=1.0,
                 linestyle=self._zone_line_style(label),
-                label=label,
+                label=self._legend_label_for_group(label, plotted_overlay_labels),
+                color=color,
             )[0]
+            overlay_colors.setdefault(label, line.get_color())
             visible = self._distance_phase_phase_zone_visibility.get(label, True)
             line.set_visible(visible)
+
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=9, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -1818,6 +2135,11 @@ class MainWindow(QMainWindow):
                         (f"{label} {point_label}", x_value, y_value)
                     )
         self._autoscale_visible(axis)
+        self._shade_rld_regions(
+            axis,
+            self._distance_ld_overlays(),
+            self._distance_phase_phase_zone_visibility,
+        )
         legend = axis.legend(loc="upper left") if line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
@@ -1858,9 +2180,18 @@ class MainWindow(QMainWindow):
             line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
             visible = self._distance_phase_ground_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
+            fill = axis.fill(
+                xs,
+                ys,
+                color=line.get_color(),
+                alpha=0.12,
+                linewidth=0,
+                label="_nolegend_",
+            )[0]
+            fill.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
-                axis.scatter(xs, ys, s=15, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
                     xs,
@@ -1878,22 +2209,36 @@ class MainWindow(QMainWindow):
                     self._distance_phase_ground_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
-        for label, points in self._outer_load_cut_overlays():
+        overlay_colors: dict[str, str] = {}
+        plotted_overlay_labels: set[str] = set()
+        for label, points in self._distance_ld_overlays():
             self._distance_phase_ground_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
+            color = overlay_colors.get(label) or self._zone_line_color(label)
             line = axis.plot(
                 xs,
                 ys,
                 linewidth=1.0,
                 linestyle=self._zone_line_style(label),
-                label=label,
+                label=self._legend_label_for_group(label, plotted_overlay_labels),
+                color=color,
             )[0]
+            overlay_colors.setdefault(label, line.get_color())
             visible = self._distance_phase_ground_zone_visibility.get(label, True)
             line.set_visible(visible)
+            fill = axis.fill(
+                xs,
+                ys,
+                color=line.get_color(),
+                alpha=0.10,
+                linewidth=0,
+                label="_nolegend_",
+            )[0]
+            fill.set_visible(visible)
             line_by_label[label] = line
             if visible:
-                axis.scatter(xs, ys, s=13, zorder=4, label="_nolegend_")
+                axis.scatter(xs, ys, s=9, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in points:
                     if self._show_point_labels:
                         axis.annotate(
@@ -1907,6 +2252,11 @@ class MainWindow(QMainWindow):
                         (f"{label} {point_label}", x_value, y_value)
                     )
         self._autoscale_visible(axis)
+        self._shade_rld_regions(
+            axis,
+            self._distance_ld_overlays(),
+            self._distance_phase_ground_zone_visibility,
+        )
         legend = axis.legend(loc="upper left") if line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
@@ -2192,6 +2542,241 @@ class MainWindow(QMainWindow):
         axis.set_xlim(x_min - x_margin, x_max + x_margin)
         axis.set_ylim(y_min - y_margin, y_max + y_margin)
 
+    def _shade_rld_regions(
+        self,
+        axis,  # type: ignore[no-untyped-def]
+        overlays: list[OverlayPolygon],
+        visibility: dict[str, bool],
+    ) -> None:
+        for cid in getattr(axis, "_rel_rld_extension_cids", []):
+            axis.callbacks.disconnect(cid)
+        axis._rel_rld_extension_cids = []  # type: ignore[attr-defined]
+
+        groups: dict[str, tuple[OverlayPoint, ...]] = {}
+        group_colors: dict[str, str] = {}
+        for label, points in overlays:
+            if not (label.startswith("RLD ") or label.startswith("Ld ")):
+                continue
+            if not visibility.get(label, True):
+                continue
+            if not points:
+                continue
+            average_x = sum(point[1] for point in points) / len(points)
+            direction = "fw" if average_x >= 0.0 else "rv"
+            kind = "inner" if "inner" in label else "outer"
+            group_key = f"{kind}_{direction}"
+            groups[group_key] = points
+            group_colors[group_key] = self._zone_line_color(label) or "#16697a"
+
+        dynamic_edge_fills: list[tuple[object, tuple[OverlayPoint, ...], str]] = []
+        dynamic_hatch_fills: list[tuple[object, tuple[OverlayPoint, ...], tuple[OverlayPoint, ...]]] = []
+        dynamic_extension_lines: list[tuple[object, OverlayPoint, OverlayPoint]] = []
+        x_min, x_max = axis.get_xlim()
+        for direction in ("fw", "rv"):
+            outer = groups.get(f"outer_{direction}")
+            inner = groups.get(f"inner_{direction}")
+            color = (
+                group_colors.get(f"outer_{direction}")
+                or group_colors.get(f"inner_{direction}")
+                or "#16697a"
+            )
+            if outer is not None:
+                outer_path = self._points_top_to_bottom(outer)
+                edge_x = x_max if direction == "fw" else x_min
+                edge_polygon_x = [point[1] for point in outer_path] + [edge_x, edge_x]
+                edge_polygon_y = [point[2] for point in outer_path] + [
+                    outer_path[-1][2],
+                    outer_path[0][2],
+                ]
+                fill = axis.fill(
+                    edge_polygon_x,
+                    edge_polygon_y,
+                    color=color,
+                    alpha=0.10,
+                    linewidth=0,
+                    label="_nolegend_",
+                    zorder=0,
+                )[0]
+                dynamic_edge_fills.append((fill, outer, direction))
+            if outer is not None and inner is not None:
+                outer_path = self._points_top_to_bottom(outer)
+                inner_path = self._points_top_to_bottom(inner)
+                hatch = axis.fill(
+                    [point[1] for point in outer_path]
+                    + [point[1] for point in reversed(inner_path)],
+                    [point[2] for point in outer_path]
+                    + [point[2] for point in reversed(inner_path)],
+                    facecolor="none",
+                    edgecolor=color,
+                    hatch="..",
+                    linewidth=0,
+                    label="_nolegend_",
+                    zorder=0,
+                )[0]
+                dynamic_hatch_fills.append((hatch, outer, inner))
+            for points, linestyle in ((outer, "-"), (inner, "--")):
+                if points is None or len(points) < 4:
+                    continue
+                top_outer, top_inner, bottom_outer, bottom_inner = self._load_cut_boundary_segments(points)
+                for outer_point, inner_point in (
+                    (top_outer, top_inner),
+                    (bottom_outer, bottom_inner),
+                ):
+                    line = axis.plot(
+                        [],
+                        [],
+                        color=color,
+                        linestyle=linestyle,
+                        linewidth=1.0,
+                        label="_nolegend_",
+                        zorder=2,
+                    )[0]
+                    dynamic_extension_lines.append((line, outer_point, inner_point))
+
+        def update_dynamic_rld_edges(_axis=axis) -> None:  # type: ignore[no-untyped-def]
+            x_min_current, x_max_current = _axis.get_xlim()
+            for fill, points, direction in dynamic_edge_fills:
+                edge_x = x_max_current if direction == "fw" else x_min_current
+                top_outer, top_inner, bottom_outer, bottom_inner = self._load_cut_boundary_segments(points)
+                top_end = self._extend_line_to_axis_edge(_axis, top_outer, top_inner)
+                bottom_end = self._extend_line_to_axis_edge(_axis, bottom_outer, bottom_inner)
+                path = self._points_top_to_bottom(points)
+                xs = [point[1] for point in path] + [bottom_end[0], edge_x, edge_x, top_end[0]]
+                ys = [point[2] for point in path] + [bottom_end[1], bottom_end[1], top_end[1], top_end[1]]
+                fill.set_xy(list(zip(xs, ys, strict=False)))
+            for fill, outer, inner in dynamic_hatch_fills:
+                outer_top, outer_top_inner, outer_bottom, outer_bottom_inner = (
+                    self._load_cut_boundary_segments(outer)
+                )
+                inner_top, inner_top_inner, inner_bottom, inner_bottom_inner = (
+                    self._load_cut_boundary_segments(inner)
+                )
+                outer_top_end = self._extend_line_to_axis_edge(_axis, outer_top, outer_top_inner)
+                outer_bottom_end = self._extend_line_to_axis_edge(_axis, outer_bottom, outer_bottom_inner)
+                inner_top_end = self._extend_line_to_axis_edge(_axis, inner_top, inner_top_inner)
+                inner_bottom_end = self._extend_line_to_axis_edge(_axis, inner_bottom, inner_bottom_inner)
+                outer_path = self._points_top_to_bottom(outer)
+                inner_path = self._points_top_to_bottom(inner)
+                xs = (
+                    [outer_top_end[0]]
+                    + [point[1] for point in outer_path]
+                    + [outer_bottom_end[0], inner_bottom_end[0]]
+                    + [point[1] for point in reversed(inner_path)]
+                    + [inner_top_end[0]]
+                )
+                ys = (
+                    [outer_top_end[1]]
+                    + [point[2] for point in outer_path]
+                    + [outer_bottom_end[1], inner_bottom_end[1]]
+                    + [point[2] for point in reversed(inner_path)]
+                    + [inner_top_end[1]]
+                )
+                fill.set_xy(list(zip(xs, ys, strict=False)))
+            for line, outer_point, inner_point in dynamic_extension_lines:
+                end_x, end_y = self._extend_line_to_axis_edge(_axis, outer_point, inner_point)
+                line.set_data([outer_point[1], end_x], [outer_point[2], end_y])
+
+        update_dynamic_rld_edges()
+        axis._rel_rld_extension_cids = [  # type: ignore[attr-defined]
+            axis.callbacks.connect("xlim_changed", update_dynamic_rld_edges),
+            axis.callbacks.connect("ylim_changed", update_dynamic_rld_edges),
+        ]
+
+    def _shade_psd_gap_regions(
+        self,
+        axis,  # type: ignore[no-untyped-def]
+        overlays: list[OverlayPolygon],
+        visibility: dict[str, bool],
+    ) -> None:
+        if not visibility.get("PSD inner", True) or not visibility.get("PSD outer", True):
+            return
+        inner = next((points for label, points in overlays if label == "PSD inner"), None)
+        outer = next((points for label, points in overlays if label == "PSD outer"), None)
+        if inner is None or outer is None:
+            return
+        color = self._zone_line_color("RLD outer") or "#16697a"
+        xs = [point[1] for point in outer] + [point[1] for point in reversed(inner)]
+        ys = [point[2] for point in outer] + [point[2] for point in reversed(inner)]
+        axis.fill(
+            xs,
+            ys,
+            facecolor="none",
+            edgecolor=color,
+            hatch="..",
+            linewidth=0,
+            label="_nolegend_",
+            zorder=0,
+        )
+
+    def _points_top_to_bottom(self, points: tuple[OverlayPoint, ...]) -> tuple[OverlayPoint, ...]:
+        ordered = tuple(points)
+        if ordered and ordered[0][2] < ordered[-1][2]:
+            return tuple(reversed(ordered))
+        return ordered
+
+    def _load_cut_boundary_segments(
+        self,
+        points: tuple[OverlayPoint, ...],
+    ) -> tuple[OverlayPoint, OverlayPoint, OverlayPoint, OverlayPoint]:
+        top_outer = max(points, key=lambda point: point[2])
+        bottom_outer = min(points, key=lambda point: point[2])
+
+        def nearest_inner(outer: OverlayPoint) -> OverlayPoint:
+            candidates = [
+                point
+                for point in points
+                if point is not outer and abs(point[1]) < abs(outer[1]) - 1e-9
+            ]
+            if not candidates:
+                candidates = [
+                    point
+                    for point in points
+                    if point is not outer and abs(point[1]) <= abs(outer[1]) + 1e-9
+                ]
+            if not candidates:
+                candidates = [point for point in points if point is not outer]
+            return min(
+                candidates,
+                key=lambda point: abs(point[2] - outer[2]),
+            )
+
+        return top_outer, nearest_inner(top_outer), bottom_outer, nearest_inner(bottom_outer)
+
+    def _extend_line_to_axis_edge(
+        self,
+        axis,  # type: ignore[no-untyped-def]
+        outer_point: OverlayPoint,
+        inner_point: OverlayPoint,
+    ) -> tuple[float, float]:
+        x_min, x_max = axis.get_xlim()
+        y_min, y_max = axis.get_ylim()
+        x0 = float(outer_point[1])
+        y0 = float(outer_point[2])
+        dx = float(outer_point[1] - inner_point[1])
+        dy = float(outer_point[2] - inner_point[2])
+        candidates: list[float] = []
+        if abs(dx) > 1e-12:
+            candidates.extend(
+                value
+                for value in ((x_min - x0) / dx, (x_max - x0) / dx)
+                if value > 1e-9
+            )
+        if abs(dy) > 1e-12:
+            candidates.extend(
+                value
+                for value in ((y_min - y0) / dy, (y_max - y0) / dy)
+                if value > 1e-9
+            )
+        for scale in sorted(candidates):
+            x_value = x0 + dx * scale
+            y_value = y0 + dy * scale
+            if (
+                x_min - 1e-9 <= x_value <= x_max + 1e-9
+                and y_min - 1e-9 <= y_value <= y_max + 1e-9
+            ):
+                return x_value, y_value
+        return x0, y0
+
     def _build_zone_construction_report(self) -> str:
         phase_phase_stages = [
             PhasePhaseStageInput(**stage)
@@ -2250,6 +2835,10 @@ class MainWindow(QMainWindow):
             sections.append(self._psd_overlay_report(self._last_psb_blocking_result))
         if self._last_phs_result is not None:
             sections.append(self._phs_journal_report())
+            sections.append("<h3>Координати PHS для 2ф КЗ</h3>")
+            sections.append(self._phs_phase_phase_2ph_coordinate_report(self._last_phs_result))
+            sections.append("<h3>Координати зон Ld на графіках PHS</h3>")
+            sections.append(self._phs_ld_coordinate_report(self._last_phs_result))
         return "\n".join(sections)
 
     def _psd_overlay_report(self, result: PsbBlockingResult) -> str:
@@ -2970,6 +3559,95 @@ class MainWindow(QMainWindow):
             ]
         )
         return "\n".join(sections)
+
+    def _phs_phase_phase_2ph_coordinate_report(self, result: PhsSelectorResult) -> str:
+        n = self._report_optional_number
+        tan_60 = tan(pi / 3.0)
+        x_shift = result.x1 / tan_60
+        rows = [
+            [
+                "AA",
+                f"x = RF<sub>FwPP</sub>/2 = {n(result.rffw_pp)}/2 = {n(result.rffw_pp / 2.0)}",
+                "y = 0",
+            ],
+            [
+                "BB",
+                "x = RF<sub>FwPP</sub>/2 + X<sub>1</sub>/tg(60) = "
+                f"{n(result.rffw_pp)}/2 + {n(result.x1)}/{n(tan_60)} = "
+                f"{n(result.rffw_pp / 2.0 + x_shift)}",
+                f"y = X<sub>1</sub> = {n(result.x1)}",
+            ],
+            ["CC", "x = 0", f"y = X<sub>1</sub> = {n(result.x1)}"],
+            [
+                "DD",
+                f"x = -RF<sub>FwPP</sub>/2 = -{n(result.rffw_pp)}/2 = {n(-result.rffw_pp / 2.0)}",
+                f"y = X<sub>1</sub> = {n(result.x1)}",
+            ],
+            [
+                "EE",
+                f"x = -RF<sub>FwPP</sub>/2 = -{n(result.rffw_pp)}/2 = {n(-result.rffw_pp / 2.0)}",
+                "y = 0",
+            ],
+            [
+                "FF",
+                "x = -(RF<sub>FwPP</sub>/2 + X<sub>1</sub>/tg(60)) = "
+                f"-({n(result.rffw_pp)}/2 + {n(result.x1)}/{n(tan_60)}) = "
+                f"{n(-(result.rffw_pp / 2.0 + x_shift))}",
+                f"y = -X<sub>1</sub> = {n(-result.x1)}",
+            ],
+            ["GG", "x = 0", f"y = -X<sub>1</sub> = {n(-result.x1)}"],
+            [
+                "HH",
+                f"x = RF<sub>FwPP</sub>/2 = {n(result.rffw_pp)}/2 = {n(result.rffw_pp / 2.0)}",
+                f"y = -X<sub>1</sub> = {n(-result.x1)}",
+            ],
+            [
+                "II",
+                f"x = RF<sub>FwPP</sub>/2 = {n(result.rffw_pp)}/2 = {n(result.rffw_pp / 2.0)}",
+                "y = 0",
+            ],
+        ]
+        return self._raw_table(["Точка", "x", "y"], rows)
+
+    def _phs_ld_coordinate_report(self, result: PhsSelectorResult) -> str:
+        n = self._report_optional_number
+        tan_arg = tan(result.arg_ld * pi / 180.0)
+        rows: list[list[str]] = []
+
+        def add_row(
+            zone: str,
+            point: str,
+            x_formula: str,
+            x_substitution: str,
+            x_value: float,
+            y_formula: str,
+            y_substitution: str,
+            y_value: float,
+        ) -> None:
+            rows.append(
+                [
+                    zone,
+                    point,
+                    f"x = {x_formula} = {x_substitution} = {n(x_value)}",
+                    f"y = {y_formula} = {y_substitution} = {n(y_value)}",
+                ]
+            )
+
+        r_fw = result.rld_fw
+        r_rv = result.rld_rv
+        arg = result.arg_ld
+        tg = n(tan_arg)
+        add_row("LdFw", "A", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "2*R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"2*{n(r_fw)}*tg({n(arg)}) = 2*{n(r_fw)}*{tg}", 2 * r_fw * tan_arg)
+        add_row("LdFw", "B", "R<sub>LdFw</sub>", n(r_fw), r_fw, "R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"{n(r_fw)}*tg({n(arg)}) = {n(r_fw)}*{tg}", r_fw * tan_arg)
+        add_row("LdFw", "C", "R<sub>LdFw</sub>", n(r_fw), r_fw, "0", "0", 0.0)
+        add_row("LdFw", "D", "R<sub>LdFw</sub>", n(r_fw), r_fw, "-R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"-{n(r_fw)}*tg({n(arg)}) = -{n(r_fw)}*{tg}", -r_fw * tan_arg)
+        add_row("LdFw", "E", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "-2*R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"-2*{n(r_fw)}*tg({n(arg)}) = -2*{n(r_fw)}*{tg}", -2 * r_fw * tan_arg)
+        add_row("LdRv", "A'", "-2*R<sub>LdRv</sub>", f"-2*{n(r_rv)}", -2 * r_rv, "-2*R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"-2*{n(r_rv)}*tg({n(arg)}) = -2*{n(r_rv)}*{tg}", -2 * r_rv * tan_arg)
+        add_row("LdRv", "B'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "-R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"-{n(r_rv)}*tg({n(arg)}) = -{n(r_rv)}*{tg}", -r_rv * tan_arg)
+        add_row("LdRv", "C'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "0", "0", 0.0)
+        add_row("LdRv", "D'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"{n(r_rv)}*tg({n(arg)}) = {n(r_rv)}*{tg}", r_rv * tan_arg)
+        add_row("LdRv", "E'", "-2*R<sub>LdRv</sub>", f"-2*{n(r_rv)}", -2 * r_rv, "2*R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"2*{n(r_rv)}*tg({n(arg)}) = 2*{n(r_rv)}*{tg}", 2 * r_rv * tan_arg)
+        return self._raw_table(["Зона", "Точка", "x", "y"], rows)
 
     def _psd_detailed_setting_sections(self, result: PsbBlockingResult) -> list[str]:
         t = self._translator.text
@@ -3832,10 +4510,10 @@ class MainWindow(QMainWindow):
         return [
             ("PSD inner", inner),
             ("PSD outer", outer),
-            ("RLD inner Fw", rld_inner_fw),
-            ("RLD inner Rv", rld_inner_rv),
-            ("RLD outer Fw", rld_outer_fw),
-            ("RLD outer Rv", rld_outer_rv),
+            ("RLD inner", rld_inner_fw),
+            ("RLD inner", rld_inner_rv),
+            ("RLD outer", rld_outer_fw),
+            ("RLD outer", rld_outer_rv),
         ]
 
     def _coordinate_table(
@@ -3871,6 +4549,26 @@ class MainWindow(QMainWindow):
             table.append("<tr>")
             for value in row:
                 table.append(f"<td style='{self._report_cell_style()}'>{self._html(value)}</td>")
+            table.append("</tr>")
+        table.append("</table>")
+        return "".join(table)
+
+    def _raw_table(self, headers: list[str], rows: list[list[str]]) -> str:
+        table = [
+            "<table cellspacing='0' cellpadding='6' "
+            "style='border-collapse: collapse; width: 100%; margin-bottom: 18px;'>",
+            "<tr>",
+        ]
+        for header in headers:
+            header = header[:1].upper() + header[1:] if header else header
+            table.append(
+                f"<th style='{self._report_cell_style(header=True)}'>{self._html(header)}</th>"
+            )
+        table.append("</tr>")
+        for row in rows:
+            table.append("<tr>")
+            for value in row:
+                table.append(f"<td style='{self._report_cell_style()}'>{value}</td>")
             table.append("</tr>")
         table.append("</table>")
         return "".join(table)
@@ -4809,18 +5507,44 @@ class MainWindow(QMainWindow):
         self._find_psd_report(backward=True)
 
     def _find_psd_report(self, *, backward: bool) -> None:
-        text = self.psd_report_search.text().strip()
+        self._find_in_report(
+            editor=self.psd_report_text,
+            search=self.psd_report_search,
+            backward=backward,
+        )
+
+    def _find_phs_report_next(self) -> None:
+        self._find_phs_report(backward=False)
+
+    def _find_phs_report_previous(self) -> None:
+        self._find_phs_report(backward=True)
+
+    def _find_phs_report(self, *, backward: bool) -> None:
+        self._find_in_report(
+            editor=self.phs_report_tab,
+            search=self.phs_report_search,
+            backward=backward,
+        )
+
+    def _find_in_report(
+        self,
+        *,
+        editor: QTextEdit,
+        search: QLineEdit,
+        backward: bool,
+    ) -> None:
+        text = search.text().strip()
         if not text:
             return
         flags = QTextDocument.FindFlag.FindBackward if backward else QTextDocument.FindFlag(0)
-        if self.psd_report_text.find(text, flags):
+        if editor.find(text, flags):
             return
-        self.psd_report_text.moveCursor(
+        editor.moveCursor(
             QTextCursor.MoveOperation.End
             if backward
             else QTextCursor.MoveOperation.Start
         )
-        self.psd_report_text.find(text, flags)
+        editor.find(text, flags)
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(
@@ -4931,6 +5655,19 @@ class MainWindow(QMainWindow):
                 ["Q", "-R<sub>1FInRv</sub>", "X<sub>1InFw</sub>"],
             ],
         )
+        psd_outer_points = self._help_table(
+            ["Точка", "x", "y"],
+            [
+                ["A`", "0", "X<sub>1InFw</sub>+DELTA<sub>FW</sub>"],
+                ["B`", "R<sub>1LIn</sub>+R<sub>1FInFw</sub>+DELTA<sub>FW</sub>+DELTA<sub>FW</sub>*tg(90-LineAngle)", "X<sub>1InFw</sub>+DELTA<sub>FW</sub>"],
+                ["F`", "R<sub>1FInFw</sub>+DELTA<sub>FW</sub>", "0"],
+                ["G`", "R<sub>1FInFw</sub>+DELTA<sub>FW</sub>", "-X<sub>1InRv</sub>-DELTA<sub>RV</sub>"],
+                ["I`", "0", "-X<sub>1InRv</sub>-DELTA<sub>RV</sub>"],
+                ["L`", "-(R<sub>1FInRv</sub>+X<sub>1InRv</sub>/tg(LineAngle)+DELTA<sub>RV</sub>+DELTA<sub>RV</sub>/tg(LineAngle))", "-X<sub>1InRv</sub>-DELTA<sub>RV</sub>"],
+                ["N`", "-R<sub>1FInRv</sub>-DELTA<sub>RV</sub>", "0"],
+                ["Q`", "-R<sub>1FInRv</sub>-DELTA<sub>RV</sub>", "X<sub>1InFw</sub>+DELTA<sub>FW</sub>"],
+            ],
+        )
         rld_points = self._help_table(
             ["Зона", "Точка", "x", "y"],
             [
@@ -4940,6 +5677,43 @@ class MainWindow(QMainWindow):
                 ["RLD inner Rv", "EE", "-RLd<sub>InRv</sub>*1,5", "(RLd<sub>InRv</sub>*1,5+∆RFw)*tg(ArgLd)"],
                 ["RLD outer Fw", "AA`", "RLd<sub>OutFw</sub>*1,5", "RLd<sub>OutFw</sub>*1,5*tg(ArgLd)"],
                 ["RLD outer Rv", "EE`", "-RLd<sub>OutRv</sub>*1,5", "RLd<sub>OutRv</sub>*1,5*tg(ArgLd)"],
+            ],
+        )
+        phs_points = self._help_table(
+            ["Графік", "Точка", "x", "y"],
+            [
+                ["Фаза-фаза (2ф КЗ)", "AA", "RF<sub>FwPP</sub>/2", "0"],
+                ["Фаза-фаза (2ф КЗ)", "BB", "RF<sub>FwPP</sub>/2 + X<sub>1</sub>/tg(60)", "X<sub>1</sub>"],
+                ["Фаза-фаза (2ф КЗ)", "CC", "0", "X<sub>1</sub>"],
+                ["Фаза-фаза (2ф КЗ)", "DD", "-RF<sub>FwPP</sub>/2", "X<sub>1</sub>"],
+                ["Фаза-фаза (2ф КЗ)", "EE", "-RF<sub>FwPP</sub>/2", "0"],
+                ["Фаза-фаза (2ф КЗ)", "FF", "-(RF<sub>FwPP</sub>/2 + X<sub>1</sub>/tg(60))", "-X<sub>1</sub>"],
+                ["Фаза-фаза (2ф КЗ)", "GG", "0", "-X<sub>1</sub>"],
+                ["Фаза-фаза (2ф КЗ)", "HH", "RF<sub>FwPP</sub>/2", "-X<sub>1</sub>"],
+                ["Фаза-фаза (2ф КЗ)", "II", "RF<sub>FwPP</sub>/2", "0"],
+                ["Фаза-фаза (3ф КЗ)", "A", "RF<sub>FwPP</sub>", "0"],
+                ["Фаза-фаза (3ф КЗ)", "B", "RF<sub>FwPP</sub>/2", "X<sub>1</sub>"],
+                ["Фаза-фаза (3ф КЗ)", "C", "-RF<sub>RvPP</sub>/2", "X<sub>1</sub>"],
+                ["Фаза-фаза (3ф КЗ)", "D", "-RF<sub>RvPP</sub>", "0"],
+                ["Фаза-земля", "AA''", "RF<sub>FwPE</sub>", "0"],
+                ["Фаза-земля", "BB''", "RF<sub>FwPE</sub> + ((2*X<sub>1</sub>+X<sub>0</sub>)/3)/tg(60)", "(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["Фаза-земля", "CC''", "0", "(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["Фаза-земля", "DD''", "-RF<sub>RvPE</sub>", "(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["Фаза-земля", "EE''", "-RF<sub>RvPE</sub>", "0"],
+                ["Фаза-земля", "FF''", "-(RF<sub>RvPE</sub> + (2*X<sub>1</sub>+X<sub>0</sub>)/3)/tg(60)", "-(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["Фаза-земля", "GG''", "0", "-(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["Фаза-земля", "HH''", "RF<sub>FwPE</sub>", "-(2*X<sub>1</sub>+X<sub>0</sub>)/3"],
+                ["Фаза-земля", "II''", "RF<sub>FwPE</sub>", "0"],
+                ["Ld Fw", "A", "2*RLd<sub>Fw</sub>", "2*RLd<sub>Fw</sub>*tg(ArgLd)"],
+                ["Ld Fw", "B", "RLd<sub>Fw</sub>", "RLd<sub>Fw</sub>*tg(ArgLd)"],
+                ["Ld Fw", "C", "RLd<sub>Fw</sub>", "0"],
+                ["Ld Fw", "D", "RLd<sub>Fw</sub>", "-RLd<sub>Fw</sub>*tg(ArgLd)"],
+                ["Ld Fw", "E", "2*RLd<sub>Fw</sub>", "-2*RLd<sub>Fw</sub>*tg(ArgLd)"],
+                ["Ld Rv", "A`", "-2*RLd<sub>Rv</sub>", "-2*RLd<sub>Rv</sub>*tg(ArgLd)"],
+                ["Ld Rv", "B`", "-RLd<sub>Rv</sub>", "-RLd<sub>Rv</sub>*tg(ArgLd)"],
+                ["Ld Rv", "C`", "-RLd<sub>Rv</sub>", "0"],
+                ["Ld Rv", "D`", "-RLd<sub>Rv</sub>", "RLd<sub>Rv</sub>*tg(ArgLd)"],
+                ["Ld Rv", "E`", "-2*RLd<sub>Rv</sub>", "2*RLd<sub>Rv</sub>*tg(ArgLd)"],
             ],
         )
         sections = [
@@ -4966,13 +5740,23 @@ class MainWindow(QMainWindow):
                 t("help.psd.title"),
                 style
                 + f"<h2>{self._html(t('help.psd.title'))}</h2>"
-                + "<p>1. До розрахунку PSD беруться ступені, для яких min(TPP, TPE) &lt;= 2,5 c, а також чутливий ступінь.</p>"
-                + "<p>2. Вибираються максимальні прямі та зворотні значення X<sub>1</sub>, X<sub>0</sub>, RF<sub>PP</sub>, RF<sub>PE</sub>, а також мінімальні кути напрямленості для відповідного напрямку.</p>"
-                + "<p class='formula'>X<sub>1InFw</sub> = max(K<sub>чPSD</sub>*X<sub>1Fw</sub>; K<sub>чPSD</sub>*(X<sub>1Fw</sub>+(X<sub>0Fw</sub>-X<sub>1Fw</sub>)/3); ...)</p>"
-                + "<p class='formula'>R<sub>1FInFw</sub> = max(K<sub>чPSD</sub>*RF<sub>PPFw</sub>/2; K<sub>чPSD</sub>*RF<sub>PEFw</sub>; ...)</p>"
-                + "<p>3. За результатами розрахунку будуються внутрішня і зовнішня зони PSD, а також внутрішня і зовнішня зони RLD. Пунктиром відображається лише внутрішня зона RLD.</p>"
+                + "<p>1. До розрахунку PSD беруться ступені, для яких min(TPP, TPE) &lt;= 2,5 c. Якщо час не заданий, він приймається рівним 0 c. Окремо користувач вибирає чутливий ступінь, який використовується як контрольна уставка для подальших розрахунків.</p>"
+                + "<p>2. Для прямих ступенів визначаються X<sub>1Fw</sub>, X<sub>0Fw</sub>, RF<sub>PPFw</sub>, RF<sub>PEFw</sub> як максимальні значення відповідних уставок серед відібраних ступенів. Для зворотних ступенів аналогічно визначаються X<sub>1Rv</sub>, X<sub>0Rv</sub>, RF<sub>PPRv</sub>, RF<sub>PERv</sub>. Кути ArgDir та ArgNegRes вибираються окремо для прямого і зворотного напрямку як мінімальні значення у своїх групах.</p>"
+                + "<p>3. Вибір внутрішньої зони у прямому напрямку виконується за умовами охоплення максимальних ступенів і перевірки перетину зворотного ступеня з лінією напрямленості у IV квадранті.</p>"
+                + "<p class='formula'>X<sub>1InFw</sub> = max(K<sub>чPSD</sub>*X<sub>1Fw</sub>; K<sub>чPSD</sub>*(X<sub>1Fw</sub>+(X<sub>0Fw</sub>-X<sub>1Fw</sub>)/3); K<sub>чPSD</sub>*(RF<sub>PPRv</sub>/2)*tg(ArgDir<sub>Rv</sub>); K<sub>чPSD</sub>*RF<sub>PERv</sub>*tg(ArgDir<sub>Rv</sub>)).</p>"
+                + "<p class='formula'>R<sub>1FInFw</sub> = max(K<sub>чPSD</sub>*RF<sub>PPFw</sub>/2; K<sub>чPSD</sub>*RF<sub>PEFw</sub>; K<sub>чPSD</sub>*X<sub>1Rv</sub>*tg(ArgNegRes<sub>Rv</sub>-90); K<sub>чPSD</sub>*(X<sub>1Rv</sub>+(X<sub>0Rv</sub>-X<sub>1Rv</sub>)/3)*tg(ArgNegRes<sub>Rv</sub>-90)).</p>"
+                + "<p>4. Для зворотного напрямку використовується така сама логіка з перестановкою напрямків Fw/Rv: охоплюється зворотний ступінь і перевіряється перетин прямого ступеня з лінією напрямленості у II квадранті.</p>"
+                + "<p class='formula'>X<sub>1InRv</sub> = max(K<sub>чPSD</sub>*X<sub>1Rv</sub>; K<sub>чPSD</sub>*(X<sub>1Rv</sub>+(X<sub>0Rv</sub>-X<sub>1Rv</sub>)/3); K<sub>чPSD</sub>*(RF<sub>PPFw</sub>/2)*tg(ArgDir<sub>Fw</sub>); K<sub>чPSD</sub>*RF<sub>PEFw</sub>*tg(ArgDir<sub>Fw</sub>)).</p>"
+                + "<p class='formula'>R<sub>1FInRv</sub> = max(K<sub>чPSD</sub>*RF<sub>PPRv</sub>/2; K<sub>чPSD</sub>*RF<sub>PERv</sub>; K<sub>чPSD</sub>*X<sub>1Fw</sub>*tg(ArgNegRes<sub>Fw</sub>-90); K<sub>чPSD</sub>*(X<sub>1Fw</sub>+(X<sub>0Fw</sub>-X<sub>1Fw</sub>)/3)*tg(ArgNegRes<sub>Fw</sub>-90)).</p>"
+                + "<p>5. Мінімальний кут нахилу береться окремо серед прямих і серед зворотних ступенів: F<sub>лFw</sub> = min(F<sub>л</sub> прямих ступенів), F<sub>лRv</sub> = min(F<sub>л</sub> зворотних ступенів). Далі R<sub>1LIn</sub> приймається як більше з двох значень.</p>"
+                + "<p class='formula'>R<sub>1LIn</sub> = max(X<sub>1InFw</sub>/tg(F<sub>лFw</sub>); X<sub>1InRv</sub>/tg(F<sub>лRv</sub>)).</p>"
+                + "<p>6. Уставки вирізу від навантаження визначаються за опорами навантаження, коефіцієнтом відлаштування K<sub>від</sub>, кутом навантаження і запасом ∆φ. Для результуючих умов вибору внутрішньої зони використовується округлення до цілого з правилом 12,49 → 13.</p>"
+                + "<p class='formula'>RLd<sub>OutFw</sub> = K<sub>від</sub>*R<sub>навFw</sub>; RLd<sub>OutRv</sub> = K<sub>від</sub>*R<sub>навRv</sub>; ArgLd = max(F<sub>навFw</sub>; F<sub>навRv</sub>) + ∆φ.</p>"
+                + "<p>7. За результатами розрахунку будуються внутрішня і зовнішня зони PSD, а також внутрішня і зовнішня зони RLD. Пунктиром відображається лише внутрішня зона RLD.</p>"
                 + "<h3>Координати внутрішньої зони PSD</h3>"
                 + psd_inner_points
+                + "<h3>Координати зовнішньої зони PSD</h3>"
+                + psd_outer_points
                 + "<h3>Координати зон вирізу від навантаження RLD</h3>"
                 + rld_points,
             ),
@@ -4980,18 +5764,25 @@ class MainWindow(QMainWindow):
                 t("help.phs.title"),
                 style
                 + f"<h2>{self._html(t('help.phs.title'))}</h2>"
-                + "<p>1. Для PHS використовується вибраний чутливий ступінь.</p>"
-                + "<p class='formula'>X<sub>1</sub> = max(K<sub>чPHS</sub>*X<sub>1Zm</sub>; K<sub>чPHS</sub>*(X<sub>1Zm</sub>*2/SQRT(3)); K<sub>чPHS</sub>*(RF<sub>FPPZm</sub>/(2*cosArgDir)*sin(30+ArgDir))).</p>"
+                + "<p>1. Для PHS використовується вибраний чутливий ступінь. Якщо він не вибраний, розрахунок блокується, а поле підсвічується як обов'язкове. Коефіцієнт чутливості PHS задається окремо як K<sub>чPHS</sub>.</p>"
+                + "<p>2. Уставка X<sub>1</sub> вибирається як максимальна з умов чутливості до КЗ у кінці лінії: 1ф КЗ на землю, 2ф КЗ, 3ф КЗ для прямонапрямлених ступенів у I чверті та охоплення ступеня у IV чверті.</p>"
+                + "<p class='formula'>X<sub>1</sub> = max(K<sub>чPHS</sub>*X<sub>1Zm</sub>; K<sub>чPHS</sub>*X<sub>1Zm</sub>*2/SQRT(3); K<sub>чPHS</sub>*(RF<sub>FPPZm</sub>/(2*cos(ArgDir))*sin(30+ArgDir))).</p>"
+                + "<p>3. Уставка X<sub>0</sub> забезпечує чутливість до однофазного КЗ на землю в кінці лінії.</p>"
                 + "<p class='formula'>X<sub>0</sub> = K<sub>чPHS</sub>*X<sub>0Zm</sub>.</p>"
+                + "<p>4. Уставка RF<sub>RvPE</sub> вибирається за умовою перетину з лінією напрямленості у II чверті.</p>"
                 + "<p class='formula'>RF<sub>RvPE</sub> = K<sub>чPHS</sub>*(X<sub>1Zm</sub>+(X<sub>0Zm</sub>-X<sub>1Zm</sub>)/3)*tg(ArgNegRes-90).</p>"
-                + "<p>2. Уставки вирізу від навантаження вибираються за мінімальним значенням між умовою відлаштування від навантаження та, якщо увімкнено, умовою з урахуванням PSD.</p>",
-            ),
-            (
-                t("help.graphs.title"),
-                style
-                + f"<h2>{self._html(t('help.graphs.title'))}</h2>"
-                + "<p>Графіки використовують R-X площину: вісь R відповідає активному опору, вісь X реактивному опору. Легенда дозволяє вмикати та вимикати окремі зони. Масштаб автоматично підлаштовується під видимі лінії.</p>"
-                + "<p>Для PSD і PHS графіки мають панель інструментів Matplotlib: масштабування, переміщення, скидання виду та експорт у графічний формат.</p>",
+                + "<p>5. Уставка RF<sub>FwPE</sub> має розгалужену логіку: якщо F<sub>лк</sub> &gt; 60°, використовується пряма умова охоплення; інакше враховується активний та реактивний опір чутливого ступеня з поправкою через ctg60°.</p>"
+                + "<p class='formula'>Якщо F<sub>лк</sub> &gt; 60°: RF<sub>FwPE</sub> = K<sub>чPHS</sub>*RF<sub>PEZm</sub>.</p>"
+                + "<p class='formula'>Інакше: RF<sub>FwPE</sub> = K<sub>чPHS</sub>*2*((R<sub>0Zm</sub>+2*R<sub>1Zm</sub>)/3 + RF<sub>PEZm</sub> - (X<sub>0Zm</sub>+2*X<sub>1Zm</sub>)*ctg60°/3).</p>"
+                + "<p>6. Уставка RF<sub>FwPP</sub> вибирається як максимальна з умов для 2ф і 3ф КЗ. Для 2ф КЗ застосовується окрема умова залежно від F<sub>лк</sub>, для 3ф КЗ використовується RF<sub>PPZm</sub>.</p>"
+                + "<p class='formula'>Якщо F<sub>лк</sub> &gt; 60°: RF<sub>FwPP</sub> = K<sub>чPHS</sub>*RF<sub>PPZm</sub>; інакше RF<sub>FwPP</sub> = K<sub>чPHS</sub>*(2*R<sub>1Zm</sub>+RF<sub>PPZm</sub>-X<sub>1Zm</sub>*ctg60°).</p>"
+                + "<p class='formula'>RF<sub>FwPP</sub> = K<sub>чPHS</sub>*(2*R<sub>1Zm</sub>+RF<sub>PPZm</sub>)*2/SQRT(3) для 3ф КЗ.</p>"
+                + "<p>7. Уставки вирізу від навантаження PHS вибираються за мінімальним значенням. Спочатку виконується відлаштування від режиму навантаження, а якщо користувач підтвердив врахування PSD, додатково перевіряється умова з урахуванням зони PSD.</p>"
+                + "<p class='formula'>RLd<sub>Fw</sub> = K<sub>від</sub>*R<sub>навFw</sub>; RLd<sub>Rv</sub> = K<sub>від</sub>*R<sub>навRv</sub>; ArgLd = max(F<sub>навFw</sub>; F<sub>навRv</sub>) + ∆φ.</p>"
+                + "<p class='formula'>Якщо PSD враховується: ArgLd<sub>Fw</sub> = arctg(tg(ArgLd<sub>PSD</sub>)/KLd<sub>FwPSD</sub>); ArgLd<sub>Rv</sub> = arctg(tg(ArgLd<sub>PSD</sub>)/KLd<sub>RvPSD</sub>); RLd<sub>Fw</sub> = KLd<sub>FwPSD</sub>*RLd<sub>OutFwPSD</sub>; RLd<sub>Rv</sub> = KLd<sub>RvPSD</sub>*RLd<sub>OutRvPSD</sub>.</p>"
+                + "<p>8. На графіках PHS додатково будуються зони Ld<sub>Fw</sub> та Ld<sub>Rv</sub>. Їх похилі межі штучно продовжуються до поточних меж графіка, тому заливка автоматично коригується під час масштабування або переміщення R-X площини.</p>"
+                + "<h3>Координати графіків PHS</h3>"
+                + phs_points,
             ),
         ]
         return sections
@@ -5039,6 +5830,9 @@ class MainWindow(QMainWindow):
         self.psd_report_search.setPlaceholderText(t("report.search_placeholder"))
         self.psd_report_find_prev_button.setText(t("button.find_previous"))
         self.psd_report_find_next_button.setText(t("button.find_next"))
+        self.phs_report_search.setPlaceholderText(t("report.search_placeholder"))
+        self.phs_report_find_prev_button.setText(t("button.find_previous"))
+        self.phs_report_find_next_button.setText(t("button.find_next"))
         self._update_psd_phase_ground_tab()
         self._retranslate_psd_tables()
         self.project_group.setTitle(t("group.project"))
@@ -5056,6 +5850,7 @@ class MainWindow(QMainWindow):
             key = button.property("translation_key")
             if isinstance(key, str):
                 button.setText(self._translator.text(key))
+            self._fit_segment_button_width(button)
 
     def _retranslate_psd_tables(self) -> None:
         self.psd_reach_table.setHorizontalHeaderLabels(
@@ -5104,4 +5899,5 @@ class MainWindow(QMainWindow):
         labels = self._rx_labels()
         labels["title"] = self._translator.text("distance.phase_ground_graph")
         return labels
+
 

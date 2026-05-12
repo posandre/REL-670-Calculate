@@ -87,7 +87,7 @@ QWidget#segmentedControl QPushButton {
     border: none;
     border-bottom: 2px solid transparent;
     border-radius: 0;
-    padding: 6px 4px 8px 4px;
+    padding: 6px 5px 8px 5px;
     font-weight: 500;
     min-width: 0;
 }

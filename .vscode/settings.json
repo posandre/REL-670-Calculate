@@ -1,0 +1,15 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.analysis.typeCheckingMode": "basic",
+
+    "editor.formatOnSave": true,
+    "files.trimTrailingWhitespace": true,
+
+    "editor.rulers": [88],
+
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff"
+    },
+
+    "ruff.nativeServer": true
+}

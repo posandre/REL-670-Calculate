@@ -260,6 +260,9 @@ class SourceDataWidget(QWidget):
     def retranslate(self) -> None:
         t = self._translator.text
         protection_index = self.protection_type_combo.currentIndex()
+        settings_state = self._settings_to_dict() if self._settings_row_keys else {}
+        load_state = self._table_items_to_dict(self.load_table)
+        sensitive_stage_column = self.sensitive_stage_combo.currentData() or 0
         self.engineering_settings_group.setTitle(t("source.engineering_settings"))
         self.protection_type_label.setText(t("source.protection_type"))
         self.sensitive_stage_label.setText(t("source.sensitive_stage"))
@@ -297,10 +300,14 @@ class SourceDataWidget(QWidget):
         self.rejection_factor_unit.setText(t("unit.relative"))
         self.delta_r_fw_rv_unit.setText(t("unit.ohm"))
         self._configure_settings_table()
+        if settings_state:
+            self._settings_from_dict(settings_state)
         self._configure_load_table()
+        self._table_items_from_dict(self.load_table, load_state)
         self._apply_protection_type_rules()
         self._update_delta_r_fw_rv()
         self._update_sensitive_stage_options()
+        self._set_sensitive_stage_column(int(sensitive_stage_column or 0))
 
     def reset(self) -> None:
         self.set_inputs_locked(False)
@@ -374,8 +381,13 @@ class SourceDataWidget(QWidget):
         self.clear_validation_errors()
         errors: list[str] = []
         required_fields = [
+            (self._translator.text("source.ktc_primary"), self.ktc_primary),
+            (self._translator.text("source.ktc_secondary"), self.ktc_secondary),
+            (self._translator.text("source.ktn_primary"), self.ktn_primary),
+            (self._translator.text("source.ktn_secondary"), self.ktn_secondary),
             (self._translator.text("source.delta_phi"), self.delta_phi),
             (self._translator.text("source.rejection_factor"), self.rejection_factor),
+            (self._translator.text("source.delta_r_fw_rv"), self.delta_r_fw_rv),
         ]
         if mode in {"all", "psd"}:
             required_fields.append(
@@ -399,10 +411,39 @@ class SourceDataWidget(QWidget):
 
         stage_errors = self._validate_stage_tables(mode)
         errors.extend(stage_errors)
-        if mode == "phs" and not self.sensitive_stage_combo.currentData():
+        load_errors = self._validate_load_table()
+        errors.extend(load_errors)
+        if mode in {"all", "psd", "phs"} and not self.sensitive_stage_combo.currentData():
             message = self._translator.text("validation.sensitive_stage_required")
             self._mark_combo_invalid(self.sensitive_stage_combo, message)
             errors.append(f"{self._translator.text('source.sensitive_stage')}: {message}")
+        return errors
+
+    def _validate_load_table(self) -> list[str]:
+        errors: list[str] = []
+        missing_cells: list[str] = []
+        required_columns = (1, 2, 3)
+        for row in range(self.load_table.rowCount()):
+            direction_item = self.load_table.item(row, 0)
+            direction = direction_item.text() if direction_item is not None else str(row + 1)
+            for column in required_columns:
+                if self._table_number(self.load_table, row, column) is not None:
+                    continue
+                header = self.load_table.horizontalHeaderItem(column)
+                column_name = header.text() if header is not None else str(column)
+                self._mark_table_invalid(
+                    self.load_table,
+                    row,
+                    column,
+                    self._translator.text("validation.required"),
+                )
+                missing_cells.append(f"{direction}: {column_name}")
+        if missing_cells:
+            errors.append(
+                self._translator.text("validation.missing_load_values")
+                + " "
+                + "; ".join(missing_cells)
+            )
         return errors
 
     def _validate_stage_tables(self, mode: str) -> list[str]:
@@ -1057,7 +1098,7 @@ class SourceDataWidget(QWidget):
                 if column >= table.columnCount():
                     continue
                 item = table.item(row, column)
-                if item is not None:
+                if item is not None and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
                     item.setText(str(value))
 
     def _copy_setting_row(self, source_name: str, target_name: str) -> None:
@@ -1102,7 +1143,14 @@ class SourceDataWidget(QWidget):
             self.load_table.setItem(row, 0, self._locked_item(direction))
             for column in range(1, self.load_table.columnCount()):
                 self.load_table.setItem(row, column, self._editable_item(""))
-        self.load_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header = self.load_table.horizontalHeader()
+        for column in range(self.load_table.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.load_table.setColumnWidth(0, 140)
+        self.load_table.setColumnWidth(1, 120)
+        self.load_table.setColumnWidth(2, 130)
+        self.load_table.setColumnWidth(3, 100)
         self._fit_table_height(self.load_table)
 
     def _locked_item(self, text: str) -> QTableWidgetItem:

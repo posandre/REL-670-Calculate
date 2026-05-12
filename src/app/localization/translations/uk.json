@@ -33,7 +33,7 @@
   "group.zones": "Зони дистанційного захисту",
   "group.psb": "Power Swing Blocking",
   "source.protection_type_group": "Тип захисту",
-  "source.engineering_settings": "Налаштування захисту",
+  "source.engineering_settings": "Загальні дані",
   "source.protection_type": "Вид захисту",
   "source.sensitive_stage": "Чутливий ступінь",
   "source.not_selected": "Не вибрано",
@@ -90,7 +90,7 @@
   "label.outer_x": "Зовнішня X, Ом",
   "label.angle": "Кут, град",
   "button.calculate": "Розрахувати",
-  "button.calculate_all": "Розрахувати все",
+  "button.calculate_all": "Розрахувати",
   "button.calculate_psd": "Розрахувати PSD",
   "button.calculate_phs": "Розрахувати PHS",
   "button.clear_results": "Очистити результати",
@@ -267,5 +267,6 @@
   ,"validation.required": "Поле обов'язкове",
   "validation.no_complete_stage": "Для розрахунку потрібні повні дані хоча б однієї ступені.",
   "validation.missing_stage_values": "Не заповнені обов'язкові параметри ступенів:",
+  "validation.missing_load_values": "Не заповнені обов'язкові параметри навантаження:",
   "validation.sensitive_stage_required": "Чутливий ступінь є обов'язковим для розрахунку PHS."
 }
