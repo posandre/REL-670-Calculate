@@ -1,17 +1,24 @@
-﻿from __future__ import annotations
+﻿# ruff: noqa: E501
 
+from __future__ import annotations
+
+import sys
 from base64 import b64encode
+from collections.abc import Iterable, Mapping, Sequence
 from io import BytesIO
-from math import atan, ceil, cos, pi, sin, sqrt, tan
+from math import atan, ceil, pi, tan
 from pathlib import Path
 from shutil import copy2
-import sys
+from typing import cast
 
+from matplotlib.lines import Line2D
+from matplotlib.patches import Polygon
 from PySide6.QtCore import QStandardPaths, Qt
-from PySide6.QtGui import QAction, QFontMetrics, QIcon, QTextCursor, QTextDocument
+from PySide6.QtGui import QFontMetrics, QIcon, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -23,9 +30,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMenu,
     QMessageBox,
-    QComboBox,
     QProgressDialog,
     QPushButton,
     QScrollArea,
@@ -46,16 +51,18 @@ from PySide6.QtWidgets import (
 from app.database.project_repository import ProjectRepository
 from app.database.session import create_session_factory, create_sqlite_engine, initialize_database
 from app.diagrams.export import SUPPORTED_EXPORT_FILTER, export_figure
-from app.diagrams.rx_diagram import configure_rx_axes, plot_rx_diagram
+from app.diagrams.rx_diagram import configure_rx_axes
 from app.localization.translator import Translator
 from app.models.project import ProjectData, ProjectMetadata
 from app.services.calculation_service import CalculationResult, CalculationService
 from app.services.calculations.phase_phase_zones import (
+    PhasePhaseStageHelpers,
     PhasePhaseStageInput,
     phase_phase_stage_helpers,
     phase_phase_zone_polygons,
 )
 from app.services.calculations.phase_ground_zones import (
+    PhaseGroundStageHelpers,
     PhaseGroundStageInput,
     phase_ground_stage_helpers,
     phase_ground_zone_polygons,
@@ -82,6 +89,8 @@ from app.utils.serialization import to_json
 OverlayPoint = tuple[str, float, float]
 OverlayPolygon = tuple[str, tuple[OverlayPoint, ...]]
 FormulaPoint = tuple[str, str, str, float, str, str, float]
+StageValue = float | bool | str | None
+StageMapping = Mapping[str, StageValue]
 
 
 class MainWindow(QMainWindow):
@@ -915,7 +924,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
         return dialog.exec() == QDialog.DialogCode.Accepted
 
-    def _dialog_segmented_graphs(self, pages: list[tuple[str, QWidget]]) -> QWidget:
+    def _dialog_segmented_graphs(self, pages: Sequence[tuple[str, QWidget]]) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -953,14 +962,22 @@ class MainWindow(QMainWindow):
         axis = panel.axis
         axis.clear()
         configure_rx_axes(axis, labels)
-        line_by_label = {}
+        line_by_label: dict[str, Line2D] = {}
         for source_line in source_panel.axis.get_lines():
             label = source_line.get_label()
-            if not label or label.startswith("_"):
+            if not isinstance(label, str) or not label or label.startswith("_"):
                 continue
+            x_data = [
+                self._float_value(value)
+                for value in cast(Iterable[object], source_line.get_xdata())
+            ]
+            y_data = [
+                self._float_value(value)
+                for value in cast(Iterable[object], source_line.get_ydata())
+            ]
             line = axis.plot(
-                list(source_line.get_xdata()),
-                list(source_line.get_ydata()),
+                x_data,
+                y_data,
                 color=source_line.get_color(),
                 linestyle=source_line.get_linestyle(),
                 linewidth=source_line.get_linewidth(),
@@ -1217,12 +1234,114 @@ class MainWindow(QMainWindow):
             return f"{value:.2f}".replace(".", ",")
         return self._report_number(value)
 
+    @staticmethod
+    def _stage_float(stage: StageMapping, key: str) -> float:
+        value = stage[key]
+        if value is None:
+            raise ValueError(f"Stage field {key!r} is required.")
+        return MainWindow._float_value(value)
+
+    @staticmethod
+    def _stage_float_any(stage: StageMapping, *keys: str) -> float:
+        for key in keys:
+            if key in stage:
+                return MainWindow._stage_float(stage, key)
+        raise KeyError(keys[0])
+
+    @staticmethod
+    def _stage_optional_float(stage: StageMapping, key: str) -> float | None:
+        value = stage.get(key)
+        return None if value is None else MainWindow._float_value(value)
+
+    @staticmethod
+    def _float_value(value: object) -> float:
+        if isinstance(value, bool | int | float | str):
+            return float(value)
+        raise TypeError(f"Expected numeric value, got {type(value).__name__}.")
+
+    @staticmethod
+    def _required_float(value: float | None) -> float:
+        if value is None:
+            raise ValueError("Expected a calculated numeric value.")
+        return float(value)
+
+    @staticmethod
+    def _psb_stage_setting_input(stage: StageMapping) -> PsbStageSettingInput:
+        return PsbStageSettingInput(
+            name=str(stage["name"]),
+            is_forward=bool(stage["is_forward"]),
+            x1=MainWindow._stage_float(stage, "x1"),
+            r1=MainWindow._stage_float(stage, "r1"),
+            x0=MainWindow._stage_float(stage, "x0"),
+            r0=MainWindow._stage_float(stage, "r0"),
+            rfpp=MainWindow._stage_float(stage, "rfpp"),
+            rfpe=MainWindow._stage_float(stage, "rfpe"),
+            arg_neg_res_deg=MainWindow._stage_float(stage, "arg_neg_res_deg"),
+            arg_dir_deg=MainWindow._stage_float(stage, "arg_dir_deg"),
+            load_angle_deg=MainWindow._stage_optional_float(stage, "load_angle_deg"),
+            time_sec=MainWindow._stage_optional_float(stage, "time_sec"),
+            compensated_load_angle_deg=MainWindow._stage_optional_float(
+                stage,
+                "compensated_load_angle_deg",
+            ),
+        )
+
+    @staticmethod
+    def _phase_phase_stage_input(stage: StageMapping) -> PhasePhaseStageInput:
+        return PhasePhaseStageInput(
+            name=str(stage["name"]),
+            is_forward=bool(stage["is_forward"]),
+            x1=MainWindow._stage_float(stage, "x1"),
+            r1=MainWindow._stage_float(stage, "r1"),
+            rpff=MainWindow._stage_float_any(stage, "rpff", "rfpp"),
+            arg_neg_res_deg=MainWindow._stage_float(stage, "arg_neg_res_deg"),
+            arg_dir_deg=MainWindow._stage_float(stage, "arg_dir_deg"),
+        )
+
+    @staticmethod
+    def _phase_ground_stage_input(stage: StageMapping) -> PhaseGroundStageInput:
+        return PhaseGroundStageInput(
+            name=str(stage["name"]),
+            is_forward=bool(stage["is_forward"]),
+            x1=MainWindow._stage_float(stage, "x1"),
+            r1=MainWindow._stage_float(stage, "r1"),
+            x0=MainWindow._stage_float(stage, "x0"),
+            r0=MainWindow._stage_float(stage, "r0"),
+            rpff=MainWindow._stage_float_any(stage, "rpff", "rfpp"),
+            rfpe=MainWindow._stage_float(stage, "rfpe"),
+            arg_neg_res_deg=MainWindow._stage_float(stage, "arg_neg_res_deg"),
+            arg_dir_deg=MainWindow._stage_float(stage, "arg_dir_deg"),
+        )
+
+    @staticmethod
+    def _load_cut_input(values: Mapping[str, float | None]) -> PsbLoadCutInput:
+        return PsbLoadCutInput(
+            r_load_fw=values.get("r_load_fw"),
+            x_load_fw=values.get("x_load_fw"),
+            r_load_rv=values.get("r_load_rv"),
+            x_load_rv=values.get("x_load_rv"),
+            rejection_factor=values.get("rejection_factor"),
+            delta_phi_deg=values.get("delta_phi_deg"),
+            delta_r_secondary=values.get("delta_r_secondary"),
+            delta_r_primary=values.get("delta_r_primary"),
+        )
+
+    @staticmethod
+    def _table_cell_text(table: QTableWidget, row: int, column: int) -> str:
+        item = table.item(row, column)
+        return item.text() if item is not None else ""
+
+    @staticmethod
+    def _table_header_text(table: QTableWidget, column: int) -> str:
+        item = table.horizontalHeaderItem(column)
+        return item.text() if item is not None else ""
+
     def _calculate_psb_blocking_settings(self) -> PsbBlockingResult | None:
         sensitivity_factor = self.source_data_widget.psd_sensitivity_factor_value()
         if sensitivity_factor is None:
             return None
         stages = [
-            PsbStageSettingInput(**stage)
+            self._psb_stage_setting_input(stage)
             for stage in self.source_data_widget.psb_stage_setting_inputs()
         ]
         if not stages:
@@ -1230,7 +1349,7 @@ class MainWindow(QMainWindow):
         return psb_blocking_settings(
             stages,
             sensitivity_factor,
-            PsbLoadCutInput(**self.source_data_widget.load_cut_inputs()),
+            self._load_cut_input(self.source_data_widget.load_cut_inputs()),
         )
 
     def _calculate_phs_selector_settings(self, *, use_psd_zone: bool) -> PhsSelectorResult | None:
@@ -1243,7 +1362,7 @@ class MainWindow(QMainWindow):
         return phs_selector_settings(
             stage,
             sensitivity_factor,
-            PsbLoadCutInput(**self.source_data_widget.load_cut_inputs()),
+            self._load_cut_input(self.source_data_widget.load_cut_inputs()),
             self._last_psb_blocking_result if use_psd_zone else None,
             use_psd_zone=use_psd_zone,
         )
@@ -1313,22 +1432,21 @@ class MainWindow(QMainWindow):
             return None
         return PhsStageInput(
             name=str(selected["name"]),
-            x1=float(selected["x1"]),
-            r1=float(selected["r1"]),
-            x0=float(selected["x0"]),
-            r0=float(selected["r0"]),
-            rfpp=float(selected["rfpp"]),
-            rfpe=float(selected["rfpe"]),
-            arg_dir_deg=float(selected["arg_dir_deg"]),
-            arg_neg_res_deg=float(selected["arg_neg_res_deg"]),
-            load_angle_ground_deg=(
-                float(selected["compensated_load_angle_deg"])
-                if selected["compensated_load_angle_deg"] is not None
-                else None
+            x1=self._stage_float(selected, "x1"),
+            r1=self._stage_float(selected, "r1"),
+            x0=self._stage_float(selected, "x0"),
+            r0=self._stage_float(selected, "r0"),
+            rfpp=self._stage_float(selected, "rfpp"),
+            rfpe=self._stage_float(selected, "rfpe"),
+            arg_dir_deg=self._stage_float(selected, "arg_dir_deg"),
+            arg_neg_res_deg=self._stage_float(selected, "arg_neg_res_deg"),
+            load_angle_ground_deg=self._stage_optional_float(
+                selected,
+                "compensated_load_angle_deg",
             ),
         )
 
-    def _selected_sensitive_stage(self) -> dict[str, object] | None:
+    def _selected_sensitive_stage(self) -> StageMapping | None:
         stages = self.source_data_widget.psb_stage_setting_inputs()
         selected_column = int(self.source_data_widget.sensitive_stage_combo.currentData() or 0)
         selected_name = (
@@ -1348,7 +1466,7 @@ class MainWindow(QMainWindow):
             forward_stages = [stage for stage in stages if bool(stage["is_forward"])]
             if not forward_stages:
                 return None
-            selected = max(forward_stages, key=lambda stage: float(stage["x1"]))
+            selected = max(forward_stages, key=lambda stage: self._stage_float(stage, "x1"))
         return selected
 
     def _update_phs_settings_table(self) -> None:
@@ -1390,6 +1508,7 @@ class MainWindow(QMainWindow):
                 panel.redraw()
         if result is None:
             return
+        load_cut_values = self._phs_load_cut_values(result)
 
         phase_phase_points = [
             (result.rffw_pp / 2.0, 0.0),
@@ -1422,12 +1541,16 @@ class MainWindow(QMainWindow):
             (result.rffw_pe, -ground_reach),
             (result.rffw_pe, 0.0),
         ]
-        load_cut_points = [
-            (result.rld_fw, result.rld_fw * tan(result.arg_ld * pi / 180.0)),
-            (result.rld_fw, -result.rld_fw * tan(result.arg_ld * pi / 180.0)),
-            (-result.rld_rv, -result.rld_rv * tan(result.arg_ld * pi / 180.0)),
-            (-result.rld_rv, result.rld_rv * tan(result.arg_ld * pi / 180.0)),
-        ]
+        load_cut_points: list[tuple[float, float]] = []
+        if load_cut_values is not None:
+            rld_fw, rld_rv, arg_ld = load_cut_values
+            tan_arg = tan(arg_ld * pi / 180.0)
+            load_cut_points = [
+                (rld_fw, rld_fw * tan_arg),
+                (rld_fw, -rld_fw * tan_arg),
+                (-rld_rv, -rld_rv * tan_arg),
+                (-rld_rv, rld_rv * tan_arg),
+            ]
         for panel, label, points in (
             (self.phs_phase_phase_2ph_panel, "PHS 2ф", phase_phase_points),
             (self.phs_phase_phase_3ph_panel, "PHS 3ф", phase_phase_3ph_points),
@@ -1487,8 +1610,17 @@ class MainWindow(QMainWindow):
             panel.canvas.mpl_disconnect(cid)
         panel._rel_phs_motion_cid = self._connect_point_tooltip(panel, targets)  # type: ignore[attr-defined]
 
+    @staticmethod
+    def _phs_load_cut_values(result: PhsSelectorResult) -> tuple[float, float, float] | None:
+        if result.rld_fw is None or result.rld_rv is None or result.arg_ld is None:
+            return None
+        return float(result.rld_fw), float(result.rld_rv), float(result.arg_ld)
+
     def _phs_ld_overlays(self, result: PhsSelectorResult) -> list[OverlayPolygon]:
-        return self._ld_overlays(result.rld_fw, result.rld_rv, result.arg_ld)
+        values = self._phs_load_cut_values(result)
+        if values is None:
+            return []
+        return self._ld_overlays(*values)
 
     def _ld_overlays(
         self,
@@ -1539,34 +1671,11 @@ class MainWindow(QMainWindow):
         try:
             if panel is self.phs_phase_ground_panel:
                 zones = phase_ground_zone_polygons(
-                    [
-                        PhaseGroundStageInput(
-                            name=str(stage["name"]),
-                            is_forward=bool(stage["is_forward"]),
-                            x1=float(stage["x1"]),
-                            r1=float(stage["r1"]),
-                            x0=float(stage["x0"]),
-                            r0=float(stage["r0"]),
-                            rpff=float(stage["rfpp"]),
-                            rfpe=float(stage["rfpe"]),
-                            arg_neg_res_deg=float(stage["arg_neg_res_deg"]),
-                            arg_dir_deg=float(stage["arg_dir_deg"]),
-                        )
-                    ]
+                    [self._phase_ground_stage_input(stage)]
                 )
             else:
                 zones = phase_phase_zone_polygons(
-                    [
-                        PhasePhaseStageInput(
-                            name=str(stage["name"]),
-                            is_forward=bool(stage["is_forward"]),
-                            x1=float(stage["x1"]),
-                            r1=float(stage["r1"]),
-                            rpff=float(stage["rfpp"]),
-                            arg_neg_res_deg=float(stage["arg_neg_res_deg"]),
-                            arg_dir_deg=float(stage["arg_dir_deg"]),
-                        )
-                    ]
+                    [self._phase_phase_stage_input(stage)]
                 )
         except (TypeError, ValueError):
             return
@@ -1584,15 +1693,19 @@ class MainWindow(QMainWindow):
         )
 
     def _shade_phs_load_cut(self, axis, result: PhsSelectorResult) -> None:  # type: ignore[no-untyped-def]
+        values = self._phs_load_cut_values(result)
+        if values is None:
+            return
+        rld_fw, rld_rv, arg_ld = values
         color = "#16697a"
-        tan_arg = tan(result.arg_ld * pi / 180.0)
+        tan_arg = tan(arg_ld * pi / 180.0)
         inner_fw = (
-            ("AA", result.rld_fw, result.rld_fw * tan_arg),
-            ("BB", result.rld_fw, -result.rld_fw * tan_arg),
+            ("AA", rld_fw, rld_fw * tan_arg),
+            ("BB", rld_fw, -rld_fw * tan_arg),
         )
         inner_rv = (
-            ("EE", -result.rld_rv, result.rld_rv * tan_arg),
-            ("FF", -result.rld_rv, -result.rld_rv * tan_arg),
+            ("EE", -rld_rv, rld_rv * tan_arg),
+            ("FF", -rld_rv, -rld_rv * tan_arg),
         )
         x_min, x_max = axis.get_xlim()
         for points, edge_x in ((inner_fw, x_max), (inner_rv, x_min)):
@@ -1625,20 +1738,20 @@ class MainWindow(QMainWindow):
         if any(value is None for value in required):
             return []
 
-        x1_fw = float(result.x1_in_fw)
-        x1_rv = float(result.x1_in_rv)
-        r_fw = float(result.r1f_in_fw)
-        r_rv = float(result.r1f_in_rv)
-        r_line = float(result.r1l_in)
-        rld_out_fw = float(result.rld_out_fw)
-        rld_out_rv = float(result.rld_out_rv)
-        rld_out_fw_load = float(result.rld_out_fw_load)
-        rld_out_rv_load = float(result.rld_out_rv_load)
-        rld_in_fw_load = float(result.rld_in_fw_load)
-        rld_in_rv_load = float(result.rld_in_rv_load)
-        kld_fw = float(result.kld_fw)
-        kld_rv = float(result.kld_rv)
-        arg_ld = float(result.arg_ld_deg)
+        x1_fw = self._required_float(result.x1_in_fw)
+        x1_rv = self._required_float(result.x1_in_rv)
+        r_fw = self._required_float(result.r1f_in_fw)
+        r_rv = self._required_float(result.r1f_in_rv)
+        r_line = self._required_float(result.r1l_in)
+        rld_out_fw = self._required_float(result.rld_out_fw)
+        rld_out_rv = self._required_float(result.rld_out_rv)
+        rld_out_fw_load = self._required_float(result.rld_out_fw_load)
+        rld_out_rv_load = self._required_float(result.rld_out_rv_load)
+        rld_in_fw_load = self._required_float(result.rld_in_fw_load)
+        rld_in_rv_load = self._required_float(result.rld_in_rv_load)
+        kld_fw = self._required_float(result.kld_fw)
+        kld_rv = self._required_float(result.kld_rv)
+        arg_ld = self._required_float(result.arg_ld_deg)
         delta_fw = rld_out_fw - rld_out_fw * kld_fw
         delta_rv = rld_out_rv - rld_out_rv * kld_rv
         if r_line == 0.0:
@@ -1818,7 +1931,7 @@ class MainWindow(QMainWindow):
 
     def _plot_psd_phase_phase_zones(self) -> None:
         stages = [
-            PhasePhaseStageInput(**stage)
+            self._phase_phase_stage_input(stage)
             for stage in self.source_data_widget.phase_phase_stage_inputs()
         ]
         zones = phase_phase_zone_polygons(stages)
@@ -1858,7 +1971,7 @@ class MainWindow(QMainWindow):
                     self._psd_phase_phase_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
-        overlay_colors: dict[str, str] = {}
+        overlay_colors: dict[str, object] = {}
         plotted_overlay_labels: set[str] = set()
         for label, points in self._psd_overlay_polygons():
             self._psd_phase_phase_zone_visibility.setdefault(label, True)
@@ -1919,7 +2032,7 @@ class MainWindow(QMainWindow):
 
     def _plot_psd_phase_ground_zones(self) -> None:
         stages = [
-            PhaseGroundStageInput(**stage)
+            self._phase_ground_stage_input(stage)
             for stage in self.source_data_widget.phase_ground_stage_inputs()
         ]
         zones = phase_ground_zone_polygons(stages)
@@ -1958,7 +2071,7 @@ class MainWindow(QMainWindow):
                     self._psd_phase_ground_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
-        overlay_colors: dict[str, str] = {}
+        overlay_colors: dict[str, object] = {}
         plotted_overlay_labels: set[str] = set()
         for label, points in self._psd_overlay_polygons():
             self._psd_phase_ground_zone_visibility.setdefault(label, True)
@@ -2054,7 +2167,7 @@ class MainWindow(QMainWindow):
             self.distance_phase_phase_panel.redraw()
             return
         stages = [
-            PhasePhaseStageInput(**stage)
+            self._phase_phase_stage_input(stage)
             for stage in self.source_data_widget.phase_phase_stage_inputs()
         ]
         zones = phase_phase_zone_polygons(stages)
@@ -2100,7 +2213,7 @@ class MainWindow(QMainWindow):
                     self._distance_phase_phase_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
-        overlay_colors: dict[str, str] = {}
+        overlay_colors: dict[str, object] = {}
         plotted_overlay_labels: set[str] = set()
         for label, points in self._distance_ld_overlays():
             self._distance_phase_phase_zone_visibility.setdefault(label, True)
@@ -2163,7 +2276,7 @@ class MainWindow(QMainWindow):
             self.distance_phase_ground_panel.redraw()
             return
         stages = [
-            PhaseGroundStageInput(**stage)
+            self._phase_ground_stage_input(stage)
             for stage in self.source_data_widget.phase_ground_stage_inputs()
         ]
         zones = phase_ground_zone_polygons(stages)
@@ -2209,7 +2322,7 @@ class MainWindow(QMainWindow):
                     self._distance_phase_ground_point_targets.append(
                         (f"{zone.name} {point_label}", x_value, y_value)
                     )
-        overlay_colors: dict[str, str] = {}
+        overlay_colors: dict[str, object] = {}
         plotted_overlay_labels: set[str] = set()
         for label, points in self._distance_ld_overlays():
             self._distance_phase_ground_zone_visibility.setdefault(label, True)
@@ -2568,9 +2681,11 @@ class MainWindow(QMainWindow):
             groups[group_key] = points
             group_colors[group_key] = self._zone_line_color(label) or "#16697a"
 
-        dynamic_edge_fills: list[tuple[object, tuple[OverlayPoint, ...], str]] = []
-        dynamic_hatch_fills: list[tuple[object, tuple[OverlayPoint, ...], tuple[OverlayPoint, ...]]] = []
-        dynamic_extension_lines: list[tuple[object, OverlayPoint, OverlayPoint]] = []
+        dynamic_edge_fills: list[tuple[Polygon, tuple[OverlayPoint, ...], str]] = []
+        dynamic_hatch_fills: list[
+            tuple[Polygon, tuple[OverlayPoint, ...], tuple[OverlayPoint, ...]]
+        ] = []
+        dynamic_extension_lines: list[tuple[Line2D, OverlayPoint, OverlayPoint]] = []
         x_min, x_max = axis.get_xlim()
         for direction in ("fw", "rv"):
             outer = groups.get(f"outer_{direction}")
@@ -2779,14 +2894,14 @@ class MainWindow(QMainWindow):
 
     def _build_zone_construction_report(self) -> str:
         phase_phase_stages = [
-            PhasePhaseStageInput(**stage)
+            self._phase_phase_stage_input(stage)
             for stage in self.source_data_widget.phase_phase_stage_inputs()
         ]
         phase_phase_zones = phase_phase_zone_polygons(phase_phase_stages)
         include_phase_ground = self.source_data_widget.protection_type_combo.currentIndex() == 0
         phase_ground_stages = (
             [
-                PhaseGroundStageInput(**stage)
+                self._phase_ground_stage_input(stage)
                 for stage in self.source_data_widget.phase_ground_stage_inputs()
             ]
             if include_phase_ground
@@ -2890,8 +3005,6 @@ class MainWindow(QMainWindow):
 
         n = self._report_optional_number
         k = n(result.sensitivity_factor)
-        forward = result.forward
-        reverse = result.reverse
         self._report_table_counter = 0
         self._report_table_refs: dict[str, int] = {}
 
@@ -2988,15 +3101,35 @@ class MainWindow(QMainWindow):
                     else "source.direction_reverse"
                 ),
             ),
-            ("X1", lambda stage: self._report_optional_number(float(stage["x1"]))),
-            ("R1", lambda stage: self._report_optional_number(float(stage["r1"]))),
-            ("X0", lambda stage: self._report_optional_number(float(stage["x0"]))),
-            ("R0", lambda stage: self._report_optional_number(float(stage["r0"]))),
-            ("RFPP", lambda stage: self._report_optional_number(float(stage["rfpp"]))),
-            ("RFPE", lambda stage: self._report_optional_number(float(stage["rfpe"]))),
-            ("ArgNegRes", lambda stage: self._report_optional_number(float(stage["arg_neg_res_deg"]))),
-            ("ArgDir", lambda stage: self._report_optional_number(float(stage["arg_dir_deg"]))),
-            ("t, c", lambda stage: self._report_optional_number(float(stage["time_sec"]) if stage["time_sec"] is not None else None)),
+            ("X1", lambda stage: self._report_optional_number(self._stage_float(stage, "x1"))),
+            ("R1", lambda stage: self._report_optional_number(self._stage_float(stage, "r1"))),
+            ("X0", lambda stage: self._report_optional_number(self._stage_float(stage, "x0"))),
+            ("R0", lambda stage: self._report_optional_number(self._stage_float(stage, "r0"))),
+            (
+                "RFPP",
+                lambda stage: self._report_optional_number(
+                    self._stage_float_any(stage, "rfpp", "rpff")
+                ),
+            ),
+            ("RFPE", lambda stage: self._report_optional_number(self._stage_float(stage, "rfpe"))),
+            (
+                "ArgNegRes",
+                lambda stage: self._report_optional_number(
+                    self._stage_float(stage, "arg_neg_res_deg")
+                ),
+            ),
+            (
+                "ArgDir",
+                lambda stage: self._report_optional_number(
+                    self._stage_float(stage, "arg_dir_deg")
+                ),
+            ),
+            (
+                "t, c",
+                lambda stage: self._report_optional_number(
+                    self._stage_optional_float(stage, "time_sec")
+                ),
+            ),
         ]
         headers = [self._translator.text("source.setting_name")] + [
             str(stage["name"]) for stage in stage_rows
@@ -3061,7 +3194,7 @@ class MainWindow(QMainWindow):
 
     def _phs_input_tables(self, result: PhsSelectorResult) -> str:
         stage = result.stage
-        load_cut = PsbLoadCutInput(**self.source_data_widget.load_cut_inputs())
+        load_cut = self._load_cut_input(self.source_data_widget.load_cut_inputs())
         parts = [
             "<p>"
             + self._math_html(
@@ -3237,7 +3370,7 @@ class MainWindow(QMainWindow):
         n = self._report_optional_number
         k = result.phs_sensitivity_factor
         stage = result.stage
-        load_cut = PsbLoadCutInput(**self.source_data_widget.load_cut_inputs())
+        load_cut = self._load_cut_input(self.source_data_widget.load_cut_inputs())
         f_load_fw = self._load_angle_for_report(load_cut.r_load_fw, load_cut.x_load_fw)
         f_load_rv = self._load_angle_for_report(load_cut.r_load_rv, load_cut.x_load_rv)
         self._report_table_counter = 0
@@ -3611,7 +3744,11 @@ class MainWindow(QMainWindow):
 
     def _phs_ld_coordinate_report(self, result: PhsSelectorResult) -> str:
         n = self._report_optional_number
-        tan_arg = tan(result.arg_ld * pi / 180.0)
+        values = self._phs_load_cut_values(result)
+        if values is None:
+            return ""
+        r_fw, r_rv, arg = values
+        tan_arg = tan(arg * pi / 180.0)
         rows: list[list[str]] = []
 
         def add_row(
@@ -3633,9 +3770,6 @@ class MainWindow(QMainWindow):
                 ]
             )
 
-        r_fw = result.rld_fw
-        r_rv = result.rld_rv
-        arg = result.arg_ld
         tg = n(tan_arg)
         add_row("LdFw", "A", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "2*R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"2*{n(r_fw)}*tg({n(arg)}) = 2*{n(r_fw)}*{tg}", 2 * r_fw * tan_arg)
         add_row("LdFw", "B", "R<sub>LdFw</sub>", n(r_fw), r_fw, "R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"{n(r_fw)}*tg({n(arg)}) = {n(r_fw)}*{tg}", r_fw * tan_arg)
@@ -3989,18 +4123,14 @@ class MainWindow(QMainWindow):
     def _load_modes_report_table(self) -> str:
         table = self.source_data_widget.load_table
         headers = [
-            table.horizontalHeaderItem(column).text()
-            if table.horizontalHeaderItem(column) is not None
-            else ""
+            self._table_header_text(table, column)
             for column in range(table.columnCount())
         ]
         rows = []
         for row in range(table.rowCount()):
             rows.append(
                 [
-                    table.item(row, column).text()
-                    if table.item(row, column) is not None
-                    else ""
+                    self._table_cell_text(table, row, column)
                     for column in range(table.columnCount())
                 ]
             )
@@ -4282,20 +4412,20 @@ class MainWindow(QMainWindow):
         if any(value is None for value in required):
             return []
 
-        x1_fw = float(result.x1_in_fw)
-        x1_rv = float(result.x1_in_rv)
-        r_fw = float(result.r1f_in_fw)
-        r_rv = float(result.r1f_in_rv)
-        r_line = float(result.r1l_in)
-        rld_out_fw = float(result.rld_out_fw)
-        rld_out_rv = float(result.rld_out_rv)
-        rld_out_fw_load = float(result.rld_out_fw_load)
-        rld_out_rv_load = float(result.rld_out_rv_load)
-        rld_in_fw_load = float(result.rld_in_fw_load)
-        rld_in_rv_load = float(result.rld_in_rv_load)
-        kld_fw = float(result.kld_fw)
-        kld_rv = float(result.kld_rv)
-        arg_ld = float(result.arg_ld_deg)
+        x1_fw = self._required_float(result.x1_in_fw)
+        x1_rv = self._required_float(result.x1_in_rv)
+        r_fw = self._required_float(result.r1f_in_fw)
+        r_rv = self._required_float(result.r1f_in_rv)
+        r_line = self._required_float(result.r1l_in)
+        rld_out_fw = self._required_float(result.rld_out_fw)
+        rld_out_rv = self._required_float(result.rld_out_rv)
+        rld_out_fw_load = self._required_float(result.rld_out_fw_load)
+        rld_out_rv_load = self._required_float(result.rld_out_rv_load)
+        rld_in_fw_load = self._required_float(result.rld_in_fw_load)
+        rld_in_rv_load = self._required_float(result.rld_in_rv_load)
+        kld_fw = self._required_float(result.kld_fw)
+        kld_rv = self._required_float(result.kld_rv)
+        arg_ld = self._required_float(result.arg_ld_deg)
         delta_fw = rld_out_fw - rld_out_fw * kld_fw
         delta_rv = rld_out_rv - rld_out_rv * kld_rv
         if r_line == 0.0:
@@ -5091,7 +5221,7 @@ class MainWindow(QMainWindow):
         stage_name: str,
         is_forward: bool,
         inputs: str,
-        helpers: object,
+        helpers: PhasePhaseStageHelpers | PhaseGroundStageHelpers,
         formulas: dict[str, list[str]],
         points: tuple[tuple[float, float], ...],
     ) -> str:
@@ -5414,9 +5544,7 @@ class MainWindow(QMainWindow):
         for row in range(self.psd_reach_table.rowCount()):
             rows.append(
                 [
-                    self.psd_reach_table.item(row, column).text()
-                    if self.psd_reach_table.item(row, column) is not None
-                    else ""
+                    self._table_cell_text(self.psd_reach_table, row, column)
                     for column in range(self.psd_reach_table.columnCount())
                 ]
             )
@@ -5467,9 +5595,7 @@ class MainWindow(QMainWindow):
         for row in range(self.phs_settings_tab.rowCount()):
             rows.append(
                 [
-                    self.phs_settings_tab.item(row, column).text()
-                    if self.phs_settings_tab.item(row, column) is not None
-                    else ""
+                    self._table_cell_text(self.phs_settings_tab, row, column)
                     for column in range(self.phs_settings_tab.columnCount())
                 ]
             )

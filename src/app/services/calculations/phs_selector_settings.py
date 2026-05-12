@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, atan, cos, degrees, pi, sin, sqrt, tan
+from math import atan, cos, degrees, pi, sin, sqrt, tan
 
 from app.services.calculations.psb_blocking_settings import PsbBlockingResult, PsbLoadCutInput
 
@@ -73,9 +73,9 @@ def phs_selector_settings(
         / (2.0 * _cos_deg(stage.arg_dir_deg))
         * _sin_deg(30.0 + stage.arg_dir_deg)
     ))
-    x1 = ceil(max(x1_ground_fault, x1_three_phase_q1, x1_three_phase_q4))
-    x0 = ceil(phs_sensitivity_factor * stage.x0)
-    rfrv_pe = ceil(
+    x1 = max(x1_ground_fault, x1_three_phase_q1, x1_three_phase_q4)
+    x0 = phs_sensitivity_factor * stage.x0
+    rfrv_pe = (
         phs_sensitivity_factor
         * _compensated_x(stage.x1, stage.x0)
         * _tan_deg(stage.arg_neg_res_deg - 90.0)
@@ -90,10 +90,10 @@ def phs_selector_settings(
     rffw_pp_three_phase = (
         phs_sensitivity_factor * (2.0 * stage.r1 + stage.rfpp) * 2.0 / sqrt(3.0)
     )
-    rffw_pp = ceil(max(rffw_pp_two_phase, rffw_pp_three_phase))
+    rffw_pp = max(rffw_pp_two_phase, rffw_pp_three_phase)
     rfrv_pp = rffw_pp
     if (stage.load_angle_ground_deg or 0.0) > 60.0:
-        rffw_pe = ceil(phs_sensitivity_factor * stage.rfpe)
+        rffw_pe = phs_sensitivity_factor * stage.rfpe
         rffw_pe_angle_branch = "high_angle"
     else:
         rffw_pe = phs_sensitivity_factor * 2.0 * (

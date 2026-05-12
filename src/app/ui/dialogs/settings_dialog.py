@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QVBoxLayout,
+    QWidget,
 )
 
 from app.localization.translator import Translator
@@ -19,7 +20,7 @@ class SettingsDialog(QDialog):
     def __init__(
         self,
         translator: Translator,
-        parent: QDialog | None = None,
+        parent: QWidget | None = None,
         *,
         show_point_labels: bool = True,
     ) -> None:
