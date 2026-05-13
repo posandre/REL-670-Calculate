@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGroupBox,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -34,13 +34,13 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QScrollArea,
-    QSlider,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QStackedWidget,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextBrowser,
     QTextEdit,
     QToolButton,
@@ -55,17 +55,22 @@ from app.diagrams.rx_diagram import configure_rx_axes
 from app.localization.translator import Translator
 from app.models.project import ProjectData, ProjectMetadata
 from app.services.calculation_service import CalculationResult, CalculationService
+from app.services.calculations.phase_ground_zones import (
+    PhaseGroundStageHelpers,
+    PhaseGroundStageInput,
+    phase_ground_stage_helpers,
+    phase_ground_zone_polygons,
+)
 from app.services.calculations.phase_phase_zones import (
     PhasePhaseStageHelpers,
     PhasePhaseStageInput,
     phase_phase_stage_helpers,
     phase_phase_zone_polygons,
 )
-from app.services.calculations.phase_ground_zones import (
-    PhaseGroundStageHelpers,
-    PhaseGroundStageInput,
-    phase_ground_stage_helpers,
-    phase_ground_zone_polygons,
+from app.services.calculations.phs_selector_settings import (
+    PhsSelectorResult,
+    PhsStageInput,
+    phs_selector_settings,
 )
 from app.services.calculations.psb_blocking_settings import (
     PsbBlockingResult,
@@ -73,18 +78,12 @@ from app.services.calculations.psb_blocking_settings import (
     PsbStageSettingInput,
     psb_blocking_settings,
 )
-from app.services.calculations.phs_selector_settings import (
-    PhsSelectorResult,
-    PhsStageInput,
-    phs_selector_settings,
-)
 from app.ui.dialogs.project_manager_dialog import ProjectManagerDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.widgets.matplotlib_canvas import MatplotlibPanel
 from app.ui.widgets.source_data_widget import SourceDataWidget
 from app.utils.docx_export import export_html_to_docx
 from app.utils.serialization import to_json
-
 
 OverlayPoint = tuple[str, float, float]
 OverlayPolygon = tuple[str, tuple[OverlayPoint, ...]]
@@ -965,8 +964,9 @@ class MainWindow(QMainWindow):
         line_by_label: dict[str, Line2D] = {}
         for source_line in source_panel.axis.get_lines():
             label = source_line.get_label()
-            if not isinstance(label, str) or not label or label.startswith("_"):
+            if not isinstance(label, str) or not label:
                 continue
+            preview_label = label if not label.startswith("_") else "_nolegend_"
             x_data = [
                 self._float_value(value)
                 for value in cast(Iterable[object], source_line.get_xdata())
@@ -981,10 +981,11 @@ class MainWindow(QMainWindow):
                 color=source_line.get_color(),
                 linestyle=source_line.get_linestyle(),
                 linewidth=source_line.get_linewidth(),
-                label=label,
+                label=preview_label,
             )[0]
             line.set_visible(source_line.get_visible())
-            line_by_label[label] = line
+            if preview_label != "_nolegend_":
+                line_by_label[label] = line
         self._autoscale_visible(axis)
         legend = axis.legend(loc="upper left") if line_by_label else None
         if legend is not None:
@@ -1508,7 +1509,7 @@ class MainWindow(QMainWindow):
                 panel.redraw()
         if result is None:
             return
-        load_cut_values = self._phs_load_cut_values(result)
+        load_cut_values = self._phs_load_cut_values_by_direction(result)
 
         phase_phase_points = [
             (result.rffw_pp / 2.0, 0.0),
@@ -1541,16 +1542,23 @@ class MainWindow(QMainWindow):
             (result.rffw_pe, -ground_reach),
             (result.rffw_pe, 0.0),
         ]
+        load_cut_segments: list[list[tuple[float, float]]] = []
         load_cut_points: list[tuple[float, float]] = []
         if load_cut_values is not None:
-            rld_fw, rld_rv, arg_ld = load_cut_values
-            tan_arg = tan(arg_ld * pi / 180.0)
-            load_cut_points = [
-                (rld_fw, rld_fw * tan_arg),
-                (rld_fw, -rld_fw * tan_arg),
-                (-rld_rv, -rld_rv * tan_arg),
-                (-rld_rv, rld_rv * tan_arg),
+            rld_fw, rld_rv, arg_ld_fw, arg_ld_rv = load_cut_values
+            tan_arg_fw = tan(arg_ld_fw * pi / 180.0)
+            tan_arg_rv = tan(arg_ld_rv * pi / 180.0)
+            load_cut_segments = [
+                [
+                    (rld_fw, rld_fw * tan_arg_fw),
+                    (rld_fw, -rld_fw * tan_arg_fw),
+                ],
+                [
+                    (-rld_rv, -rld_rv * tan_arg_rv),
+                    (-rld_rv, rld_rv * tan_arg_rv),
+                ],
             ]
+            load_cut_points = [point for segment in load_cut_segments for point in segment]
         for panel, label, points in (
             (self.phs_phase_phase_2ph_panel, "PHS 2ф", phase_phase_points),
             (self.phs_phase_phase_3ph_panel, "PHS 3ф", phase_phase_3ph_points),
@@ -1558,15 +1566,29 @@ class MainWindow(QMainWindow):
             (self.phs_load_cut_panel, "Виріз від навантаження", load_cut_points),
         ):
             axis = panel.axis
-            xs = [point[0] for point in points]
-            ys = [point[1] for point in points]
-            axis.plot(xs, ys, linewidth=1.0, label=label)
             point_targets: list[tuple[str, float, float]] = []
-            axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
-            for point_label, x_value, y_value in zip(
-                self._phs_point_labels_for_panel(panel, len(points)),
-                xs,
-                ys,
+            if panel is self.phs_load_cut_panel and load_cut_segments:
+                for segment_index, segment in enumerate(load_cut_segments):
+                    xs = [point[0] for point in segment]
+                    ys = [point[1] for point in segment]
+                    axis.plot(
+                        xs,
+                        ys,
+                        linewidth=1.0,
+                        label=label if segment_index == 0 else "_nolegend_",
+                    )
+                    axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
+                plotted_points = load_cut_points
+            else:
+                xs = [point[0] for point in points]
+                ys = [point[1] for point in points]
+                axis.plot(xs, ys, linewidth=1.0, label=label)
+                axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
+                plotted_points = points
+
+            for point_label, (x_value, y_value) in zip(
+                self._phs_point_labels_for_panel(panel, len(plotted_points)),
+                plotted_points,
                 strict=False,
             ):
                 point_targets.append((f"{label} {point_label}", x_value, y_value))
@@ -1616,8 +1638,29 @@ class MainWindow(QMainWindow):
             return None
         return float(result.rld_fw), float(result.rld_rv), float(result.arg_ld)
 
+    @staticmethod
+    def _min_existing_float(*values: float | None) -> float | None:
+        complete_values = [float(value) for value in values if value is not None]
+        return min(complete_values) if complete_values else None
+
+    @staticmethod
+    def _phs_load_cut_values_by_direction(
+        result: PhsSelectorResult,
+    ) -> tuple[float, float, float, float] | None:
+        if result.rld_fw is None or result.rld_rv is None:
+            return None
+        arg_ld_fw = MainWindow._min_existing_float(result.arg_ld_load, result.arg_ld_fw_psd)
+        arg_ld_rv = MainWindow._min_existing_float(result.arg_ld_load, result.arg_ld_rv_psd)
+        if arg_ld_fw is None:
+            arg_ld_fw = float(result.arg_ld) if result.arg_ld is not None else None
+        if arg_ld_rv is None:
+            arg_ld_rv = float(result.arg_ld) if result.arg_ld is not None else None
+        if arg_ld_fw is None or arg_ld_rv is None:
+            return None
+        return float(result.rld_fw), float(result.rld_rv), arg_ld_fw, arg_ld_rv
+
     def _phs_ld_overlays(self, result: PhsSelectorResult) -> list[OverlayPolygon]:
-        values = self._phs_load_cut_values(result)
+        values = self._phs_load_cut_values_by_direction(result)
         if values is None:
             return []
         return self._ld_overlays(*values)
@@ -1626,28 +1669,31 @@ class MainWindow(QMainWindow):
         self,
         rld_fw: float,
         rld_rv: float,
-        arg_ld_deg: float,
+        arg_ld_fw_deg: float,
+        arg_ld_rv_deg: float | None = None,
     ) -> list[OverlayPolygon]:
-        tan_arg = tan(arg_ld_deg * pi / 180.0)
+        tan_arg_fw = tan(arg_ld_fw_deg * pi / 180.0)
+        rv_angle = arg_ld_rv_deg if arg_ld_rv_deg is not None else arg_ld_fw_deg
+        tan_arg_rv = tan(rv_angle * pi / 180.0)
         return [
             (
                 "Ld Fw",
                 (
-                    ("A", 2.0 * rld_fw, 2.0 * rld_fw * tan_arg),
-                    ("B", rld_fw, rld_fw * tan_arg),
+                    ("A", 2.0 * rld_fw, 2.0 * rld_fw * tan_arg_fw),
+                    ("B", rld_fw, rld_fw * tan_arg_fw),
                     ("C", rld_fw, 0.0),
-                    ("D", rld_fw, -rld_fw * tan_arg),
-                    ("E", 2.0 * rld_fw, -2.0 * rld_fw * tan_arg),
+                    ("D", rld_fw, -rld_fw * tan_arg_fw),
+                    ("E", 2.0 * rld_fw, -2.0 * rld_fw * tan_arg_fw),
                 ),
             ),
             (
                 "Ld Rv",
                 (
-                    ("A'", -2.0 * rld_rv, -2.0 * rld_rv * tan_arg),
-                    ("B'", -rld_rv, -rld_rv * tan_arg),
+                    ("A'", -2.0 * rld_rv, -2.0 * rld_rv * tan_arg_rv),
+                    ("B'", -rld_rv, -rld_rv * tan_arg_rv),
                     ("C'", -rld_rv, 0.0),
-                    ("D'", -rld_rv, rld_rv * tan_arg),
-                    ("E'", -2.0 * rld_rv, 2.0 * rld_rv * tan_arg),
+                    ("D'", -rld_rv, rld_rv * tan_arg_rv),
+                    ("E'", -2.0 * rld_rv, 2.0 * rld_rv * tan_arg_rv),
                 ),
             ),
         ]
@@ -1754,6 +1800,12 @@ class MainWindow(QMainWindow):
         arg_ld = self._required_float(result.arg_ld_deg)
         delta_fw = rld_out_fw - rld_out_fw * kld_fw
         delta_rv = rld_out_rv - rld_out_rv * kld_rv
+        rld_out_fw_plot = abs(rld_out_fw_load)
+        rld_out_rv_plot = abs(rld_out_rv_load)
+        rld_in_fw_plot = abs(rld_in_fw_load)
+        rld_in_rv_plot = abs(rld_in_rv_load)
+        delta_fw_plot = abs(delta_fw)
+        delta_rv_plot = abs(delta_rv)
         if r_line == 0.0:
             return []
         line_angle = atan(x1_fw / r_line) * 180.0 / pi
@@ -1813,42 +1865,42 @@ class MainWindow(QMainWindow):
         rld_inner_fw = (
             (
                 "AA",
-                rld_in_fw_load * 1.5,
-                (rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld,
+                rld_in_fw_plot * 1.5,
+                (rld_in_fw_plot * 1.5 + delta_fw_plot) * tan_arg_ld,
             ),
-            ("BB", rld_in_fw_load, rld_out_fw_load * tan_arg_ld),
-            ("CC", rld_in_fw_load, -rld_out_fw_load * tan_arg_ld),
+            ("BB", rld_in_fw_plot, rld_out_fw_plot * tan_arg_ld),
+            ("CC", rld_in_fw_plot, -rld_out_fw_plot * tan_arg_ld),
             (
                 "DD",
-                rld_in_fw_load * 1.5,
-                -(rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld,
+                rld_in_fw_plot * 1.5,
+                -(rld_in_fw_plot * 1.5 + delta_fw_plot) * tan_arg_ld,
             ),
         )
         rld_inner_rv = (
             (
                 "EE",
-                -rld_in_rv_load * 1.5,
-                (rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld,
+                -rld_in_rv_plot * 1.5,
+                (rld_in_rv_plot * 1.5 + delta_rv_plot) * tan_arg_ld,
             ),
-            ("FF", -rld_in_rv_load, rld_out_rv_load * tan_arg_ld),
-            ("GG", -rld_in_rv_load, -rld_out_rv_load * tan_arg_ld),
+            ("FF", -rld_in_rv_plot, rld_out_rv_plot * tan_arg_ld),
+            ("GG", -rld_in_rv_plot, -rld_out_rv_plot * tan_arg_ld),
             (
                 "HH",
-                -rld_in_rv_load * 1.5,
-                -(rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld,
+                -rld_in_rv_plot * 1.5,
+                -(rld_in_rv_plot * 1.5 + delta_rv_plot) * tan_arg_ld,
             ),
         )
         rld_outer_fw = (
-            ("AA'", rld_out_fw_load * 1.5, (rld_out_fw_load * 1.5) * tan_arg_ld),
-            ("BB'", rld_out_fw_load, rld_out_fw_load * tan_arg_ld),
-            ("CC'", rld_out_fw_load, -rld_out_fw_load * tan_arg_ld),
-            ("DD'", rld_out_fw_load * 1.5, -(rld_out_fw_load * 1.5) * tan_arg_ld),
+            ("AA'", rld_out_fw_plot * 1.5, (rld_out_fw_plot * 1.5) * tan_arg_ld),
+            ("BB'", rld_out_fw_plot, rld_out_fw_plot * tan_arg_ld),
+            ("CC'", rld_out_fw_plot, -rld_out_fw_plot * tan_arg_ld),
+            ("DD'", rld_out_fw_plot * 1.5, -(rld_out_fw_plot * 1.5) * tan_arg_ld),
         )
         rld_outer_rv = (
-            ("EE'", -rld_out_rv_load * 1.5, (rld_out_rv_load * 1.5) * tan_arg_ld),
-            ("FF'", -rld_out_rv_load, rld_out_rv_load * tan_arg_ld),
-            ("GG'", -rld_out_rv_load, -rld_out_rv_load * tan_arg_ld),
-            ("HH'", -rld_out_rv_load * 1.5, -(rld_out_rv_load * 1.5) * tan_arg_ld),
+            ("EE'", -rld_out_rv_plot * 1.5, (rld_out_rv_plot * 1.5) * tan_arg_ld),
+            ("FF'", -rld_out_rv_plot, rld_out_rv_plot * tan_arg_ld),
+            ("GG'", -rld_out_rv_plot, -rld_out_rv_plot * tan_arg_ld),
+            ("HH'", -rld_out_rv_plot * 1.5, -(rld_out_rv_plot * 1.5) * tan_arg_ld),
         )
         overlays = [
             ("PSD inner", inner),
@@ -3744,11 +3796,12 @@ class MainWindow(QMainWindow):
 
     def _phs_ld_coordinate_report(self, result: PhsSelectorResult) -> str:
         n = self._report_optional_number
-        values = self._phs_load_cut_values(result)
+        values = self._phs_load_cut_values_by_direction(result)
         if values is None:
             return ""
-        r_fw, r_rv, arg = values
-        tan_arg = tan(arg * pi / 180.0)
+        r_fw, r_rv, arg_fw, arg_rv = values
+        tan_arg_fw = tan(arg_fw * pi / 180.0)
+        tan_arg_rv = tan(arg_rv * pi / 180.0)
         rows: list[list[str]] = []
 
         def add_row(
@@ -3770,17 +3823,18 @@ class MainWindow(QMainWindow):
                 ]
             )
 
-        tg = n(tan_arg)
-        add_row("LdFw", "A", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "2*R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"2*{n(r_fw)}*tg({n(arg)}) = 2*{n(r_fw)}*{tg}", 2 * r_fw * tan_arg)
-        add_row("LdFw", "B", "R<sub>LdFw</sub>", n(r_fw), r_fw, "R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"{n(r_fw)}*tg({n(arg)}) = {n(r_fw)}*{tg}", r_fw * tan_arg)
+        tg_fw = n(tan_arg_fw)
+        tg_rv = n(tan_arg_rv)
+        add_row("LdFw", "A", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "2*R<sub>LdFw</sub>*tg(Arg<sub>LdFw</sub>)", f"2*{n(r_fw)}*tg({n(arg_fw)}) = 2*{n(r_fw)}*{tg_fw}", 2 * r_fw * tan_arg_fw)
+        add_row("LdFw", "B", "R<sub>LdFw</sub>", n(r_fw), r_fw, "R<sub>LdFw</sub>*tg(Arg<sub>LdFw</sub>)", f"{n(r_fw)}*tg({n(arg_fw)}) = {n(r_fw)}*{tg_fw}", r_fw * tan_arg_fw)
         add_row("LdFw", "C", "R<sub>LdFw</sub>", n(r_fw), r_fw, "0", "0", 0.0)
-        add_row("LdFw", "D", "R<sub>LdFw</sub>", n(r_fw), r_fw, "-R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"-{n(r_fw)}*tg({n(arg)}) = -{n(r_fw)}*{tg}", -r_fw * tan_arg)
-        add_row("LdFw", "E", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "-2*R<sub>LdFw</sub>*tg(Arg<sub>Ld</sub>)", f"-2*{n(r_fw)}*tg({n(arg)}) = -2*{n(r_fw)}*{tg}", -2 * r_fw * tan_arg)
-        add_row("LdRv", "A'", "-2*R<sub>LdRv</sub>", f"-2*{n(r_rv)}", -2 * r_rv, "-2*R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"-2*{n(r_rv)}*tg({n(arg)}) = -2*{n(r_rv)}*{tg}", -2 * r_rv * tan_arg)
-        add_row("LdRv", "B'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "-R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"-{n(r_rv)}*tg({n(arg)}) = -{n(r_rv)}*{tg}", -r_rv * tan_arg)
+        add_row("LdFw", "D", "R<sub>LdFw</sub>", n(r_fw), r_fw, "-R<sub>LdFw</sub>*tg(Arg<sub>LdFw</sub>)", f"-{n(r_fw)}*tg({n(arg_fw)}) = -{n(r_fw)}*{tg_fw}", -r_fw * tan_arg_fw)
+        add_row("LdFw", "E", "2*R<sub>LdFw</sub>", f"2*{n(r_fw)}", 2 * r_fw, "-2*R<sub>LdFw</sub>*tg(Arg<sub>LdFw</sub>)", f"-2*{n(r_fw)}*tg({n(arg_fw)}) = -2*{n(r_fw)}*{tg_fw}", -2 * r_fw * tan_arg_fw)
+        add_row("LdRv", "A'", "-2*R<sub>LdRv</sub>", f"-2*{n(r_rv)}", -2 * r_rv, "-2*R<sub>LdRv</sub>*tg(Arg<sub>LdRv</sub>)", f"-2*{n(r_rv)}*tg({n(arg_rv)}) = -2*{n(r_rv)}*{tg_rv}", -2 * r_rv * tan_arg_rv)
+        add_row("LdRv", "B'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "-R<sub>LdRv</sub>*tg(Arg<sub>LdRv</sub>)", f"-{n(r_rv)}*tg({n(arg_rv)}) = -{n(r_rv)}*{tg_rv}", -r_rv * tan_arg_rv)
         add_row("LdRv", "C'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "0", "0", 0.0)
-        add_row("LdRv", "D'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"{n(r_rv)}*tg({n(arg)}) = {n(r_rv)}*{tg}", r_rv * tan_arg)
-        add_row("LdRv", "E'", "-2*R<sub>LdRv</sub>", f"-2*{n(r_rv)}", -2 * r_rv, "2*R<sub>LdRv</sub>*tg(Arg<sub>Ld</sub>)", f"2*{n(r_rv)}*tg({n(arg)}) = 2*{n(r_rv)}*{tg}", 2 * r_rv * tan_arg)
+        add_row("LdRv", "D'", "-R<sub>LdRv</sub>", f"-{n(r_rv)}", -r_rv, "R<sub>LdRv</sub>*tg(Arg<sub>LdRv</sub>)", f"{n(r_rv)}*tg({n(arg_rv)}) = {n(r_rv)}*{tg_rv}", r_rv * tan_arg_rv)
+        add_row("LdRv", "E'", "-2*R<sub>LdRv</sub>", f"-2*{n(r_rv)}", -2 * r_rv, "2*R<sub>LdRv</sub>*tg(Arg<sub>LdRv</sub>)", f"2*{n(r_rv)}*tg({n(arg_rv)}) = 2*{n(r_rv)}*{tg_rv}", 2 * r_rv * tan_arg_rv)
         return self._raw_table(["Зона", "Точка", "x", "y"], rows)
 
     def _psd_detailed_setting_sections(self, result: PsbBlockingResult) -> list[str]:
@@ -4619,10 +4673,10 @@ class MainWindow(QMainWindow):
             p("DD", "RLdInFw_load*1,5", f"{n(rld_in_fw_load)}*1,5", rld_in_fw_load * 1.5, "-(RLdInFw_load*1,5 + DELTA FW)*tg(ArgLd)", f"-({n(rld_in_fw_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", -(rld_in_fw_load * 1.5 + delta_fw) * tan_arg_ld),
         )
         rld_inner_rv = (
-            p("EE", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "(RLdInRv_load*1,5 + DELTA FW)*tg(ArgLd)", f"({n(rld_in_rv_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", (rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld),
+            p("EE", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "(RLdInRv_load*1,5 + DELTA RV)*tg(ArgLd)", f"({n(rld_in_rv_load)}*1,5 + {n(delta_rv)})*{tg_arg_ld}", (rld_in_rv_load * 1.5 + delta_rv) * tan_arg_ld),
             p("FF", "-RLdInRv_load", f"-{n(rld_in_rv_load)}", -rld_in_rv_load, "RLdOutRv_load*tg(ArgLd)", f"{n(rld_out_rv_load)}*{tg_arg_ld}", rld_out_rv_load * tan_arg_ld),
             p("GG", "-RLdInRv_load", f"-{n(rld_in_rv_load)}", -rld_in_rv_load, "-RLdOutRv_load*tg(ArgLd)", f"-{n(rld_out_rv_load)}*{tg_arg_ld}", -rld_out_rv_load * tan_arg_ld),
-            p("HH", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "-(RLdInRv_load*1,5 + DELTA FW)*tg(ArgLd)", f"-({n(rld_in_rv_load)}*1,5 + {n(delta_fw)})*{tg_arg_ld}", -(rld_in_rv_load * 1.5 + delta_fw) * tan_arg_ld),
+            p("HH", "-RLdInRv_load*1,5", f"-{n(rld_in_rv_load)}*1,5", -rld_in_rv_load * 1.5, "-(RLdInRv_load*1,5 + DELTA RV)*tg(ArgLd)", f"-({n(rld_in_rv_load)}*1,5 + {n(delta_rv)})*{tg_arg_ld}", -(rld_in_rv_load * 1.5 + delta_rv) * tan_arg_ld),
         )
         rld_outer_fw = (
             p("AA'", "RLdOutFw_load*1,5", f"{n(rld_out_fw_load)}*1,5", rld_out_fw_load * 1.5, "RLdOutFw_load*1,5*tg(ArgLd)", f"{n(rld_out_fw_load)}*1,5*{tg_arg_ld}", rld_out_fw_load * 1.5 * tan_arg_ld),
@@ -5800,7 +5854,7 @@ class MainWindow(QMainWindow):
                 ["RLD inner Fw", "AA", "RLd<sub>InFw</sub>*1,5", "(RLd<sub>InFw</sub>*1,5+∆RFw)*tg(ArgLd)"],
                 ["RLD inner Fw", "BB", "RLd<sub>InFw</sub>", "RLd<sub>OutFw</sub>*tg(ArgLd)"],
                 ["RLD inner Fw", "CC", "RLd<sub>InFw</sub>", "-RLd<sub>OutFw</sub>*tg(ArgLd)"],
-                ["RLD inner Rv", "EE", "-RLd<sub>InRv</sub>*1,5", "(RLd<sub>InRv</sub>*1,5+∆RFw)*tg(ArgLd)"],
+                ["RLD inner Rv", "EE", "-RLd<sub>InRv</sub>*1,5", "(RLd<sub>InRv</sub>*1,5+∆RRv)*tg(ArgLd)"],
                 ["RLD outer Fw", "AA`", "RLd<sub>OutFw</sub>*1,5", "RLd<sub>OutFw</sub>*1,5*tg(ArgLd)"],
                 ["RLD outer Rv", "EE`", "-RLd<sub>OutRv</sub>*1,5", "RLd<sub>OutRv</sub>*1,5*tg(ArgLd)"],
             ],
