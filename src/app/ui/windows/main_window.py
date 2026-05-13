@@ -6,7 +6,7 @@ import sys
 from base64 import b64encode
 from collections.abc import Iterable, Mapping, Sequence
 from io import BytesIO
-from math import atan, ceil, pi, tan
+from math import atan, ceil, cos, pi, sin, sqrt, tan
 from pathlib import Path
 from shutil import copy2
 from typing import cast
@@ -115,9 +115,12 @@ class MainWindow(QMainWindow):
         self._distance_phase_ground_motion_cid: int | None = None
         self._distance_phase_ground_zone_visibility: dict[str, bool] = {}
         self._distance_phase_ground_point_targets: list[tuple[str, float, float]] = []
+        self._phs_zone_visibility: dict[str, bool] = {}
+        self._phs_pick_cids: dict[int, int] = {}
         self._last_psb_blocking_result: PsbBlockingResult | None = None
         self._last_phs_result: PhsSelectorResult | None = None
         self._show_point_labels = False
+        self._zone_colors = self._default_zone_colors()
         self._results_locked = False
         self._psd_calculated = False
         self._phs_calculated = False
@@ -242,22 +245,6 @@ class MainWindow(QMainWindow):
         )
         self.export_psd_settings_button = QPushButton()
         self.export_psd_settings_button.clicked.connect(self._export_psd_settings_docx)
-        self.export_psd_phase_phase_graph_button = QPushButton()
-        self.export_psd_phase_phase_graph_button.clicked.connect(
-            lambda: self._export_graph_panel(self.psd_phase_phase_panel, "psd_phase_phase")
-        )
-        self.export_psd_phase_ground_graph_button = QPushButton()
-        self.export_psd_phase_ground_graph_button.clicked.connect(
-            lambda: self._export_graph_panel(self.psd_phase_ground_panel, "psd_phase_ground")
-        )
-        self.export_distance_phase_phase_graph_button = QPushButton()
-        self.export_distance_phase_phase_graph_button.clicked.connect(
-            lambda: self._export_graph_panel(self.distance_phase_phase_panel, "distance_phase_phase")
-        )
-        self.export_distance_phase_ground_graph_button = QPushButton()
-        self.export_distance_phase_ground_graph_button.clicked.connect(
-            lambda: self._export_graph_panel(self.distance_phase_ground_panel, "distance_phase_ground")
-        )
         self.export_phs_settings_button = QPushButton()
         self.export_phs_settings_button.clicked.connect(self._export_phs_settings_docx)
         self.export_phs_report_button = QPushButton()
@@ -271,6 +258,15 @@ class MainWindow(QMainWindow):
         self.phs_report_zoom_slider.valueChanged.connect(
             lambda value: self._set_report_zoom(self.phs_report_tab, value)
         )
+        self.journal_zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.journal_zoom_slider.setRange(80, 160)
+        self.journal_zoom_slider.setValue(100)
+        self.journal_zoom_slider.setFixedWidth(120)
+        self.journal_zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.journal_zoom_slider.setTickInterval(20)
+        self.journal_zoom_slider.valueChanged.connect(
+            lambda value: self._set_report_zoom(self.report_text, value)
+        )
         self.source_data_widget.protection_type_combo.currentIndexChanged.connect(
             self._update_psd_phase_ground_tab
         )
@@ -283,7 +279,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_distance_zones_tab(), "")
         self.tabs.addTab(self._build_psd_tab(), "")
         self.tabs.addTab(self._build_phs_tab(), "")
-        self.tabs.addTab(self.report_text, "")
+        self.tabs.addTab(self._build_journal_tab(), "")
         self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("")
         self.tabs.currentChanged.connect(self._guard_result_tabs)
@@ -306,12 +302,6 @@ class MainWindow(QMainWindow):
 
         panel.toolbar.set_message = show_message  # type: ignore[method-assign]
         panel._rel_status_coordinates = True  # type: ignore[attr-defined]
-
-    def _add_graph_export_button(self, panel: MatplotlibPanel, button: QPushButton) -> None:
-        if button.parent() is not panel.toolbar:
-            button.setParent(panel.toolbar)
-        panel.toolbar.addSeparator()
-        panel.toolbar.addWidget(button)
 
     def _build_input_tab(self) -> QWidget:
         page = QWidget()
@@ -456,11 +446,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(panel)
-        export_button = QPushButton(self._translator.text("button.export_graph"))
-        export_button.clicked.connect(
-            lambda checked=False, target=panel: self._export_graph_panel(target, "phs_graph")
-        )
-        self._add_graph_export_button(panel, export_button)
         layout.addWidget(panel)
         return page
 
@@ -538,6 +523,19 @@ class MainWindow(QMainWindow):
         layout.addLayout(footer)
         return page
 
+    def _build_journal_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.report_text)
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        footer.addStretch()
+        footer.addSpacing(20)
+        footer.addWidget(QLabel(self._translator.text("report.zoom")))
+        footer.addWidget(self.journal_zoom_slider)
+        layout.addLayout(footer)
+        return page
+
     def _build_distance_zones_tab(self) -> QWidget:
         self.distance_phase_phase_tab = self._build_distance_phase_phase_tab()
         self.distance_phase_ground_tab = self._build_distance_phase_ground_tab()
@@ -603,10 +601,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(self.distance_phase_phase_panel)
-        self._add_graph_export_button(
-            self.distance_phase_phase_panel,
-            self.export_distance_phase_phase_graph_button,
-        )
         layout.addWidget(self.distance_phase_phase_panel)
         return page
 
@@ -614,10 +608,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(self.distance_phase_ground_panel)
-        self._add_graph_export_button(
-            self.distance_phase_ground_panel,
-            self.export_distance_phase_ground_graph_button,
-        )
         layout.addWidget(self.distance_phase_ground_panel)
         return page
 
@@ -637,10 +627,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(self.psd_phase_phase_panel)
-        self._add_graph_export_button(
-            self.psd_phase_phase_panel,
-            self.export_psd_phase_phase_graph_button,
-        )
         layout.addWidget(self.psd_phase_phase_panel)
         return page
 
@@ -648,10 +634,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(self.psd_phase_ground_panel)
-        self._add_graph_export_button(
-            self.psd_phase_ground_panel,
-            self.export_psd_phase_ground_graph_button,
-        )
         layout.addWidget(self.psd_phase_ground_panel)
         return page
 
@@ -1523,12 +1505,21 @@ class MainWindow(QMainWindow):
             (result.rffw_pp / 2.0, 0.0),
         ]
         phase_phase_3ph_points = [
-            (0.0, 0.0),
-            (result.rffw_pp, 0.0),
-            (result.rffw_pp / 2.0, result.x1),
-            (-result.rfrv_pp / 2.0, result.x1),
-            (-result.rfrv_pp, 0.0),
-            (0.0, 0.0),
+            self._phs_three_phase_point(result.rffw_pp / 2.0, 0.0),
+            self._phs_three_phase_point(
+                result.rffw_pp / 2.0 + result.x1 / tan(pi / 3.0),
+                result.x1,
+            ),
+            self._phs_three_phase_point(0.0, result.x1),
+            self._phs_three_phase_point(-result.rfrv_pp / 2.0, result.x1),
+            self._phs_three_phase_point(-result.rfrv_pp / 2.0, 0.0),
+            self._phs_three_phase_point(
+                -(result.rfrv_pp / 2.0 + result.x1 / tan(pi / 3.0)),
+                -result.x1,
+            ),
+            self._phs_three_phase_point(0.0, -result.x1),
+            self._phs_three_phase_point(result.rffw_pp / 2.0, -result.x1),
+            self._phs_three_phase_point(result.rffw_pp / 2.0, 0.0),
         ]
         ground_reach = (2.0 * result.x1 + result.x0) / 3.0
         phase_ground_points = [
@@ -1566,58 +1557,119 @@ class MainWindow(QMainWindow):
             (self.phs_load_cut_panel, "Виріз від навантаження", load_cut_points),
         ):
             axis = panel.axis
+            self._phs_zone_visibility.setdefault(label, True)
             point_targets: list[tuple[str, float, float]] = []
+            line_by_label: dict[str, object] = {}
+            visible = self._phs_zone_visibility.get(label, True)
             if panel is self.phs_load_cut_panel and load_cut_segments:
+                color = self._zone_line_color(label)
                 for segment_index, segment in enumerate(load_cut_segments):
                     xs = [point[0] for point in segment]
                     ys = [point[1] for point in segment]
-                    axis.plot(
+                    line = axis.plot(
                         xs,
                         ys,
                         linewidth=1.0,
                         label=label if segment_index == 0 else "_nolegend_",
+                        color=color,
+                    )[0]
+                    line.set_visible(visible)
+                    if segment_index == 0:
+                        line_by_label[label] = line
+                    scatter = axis.scatter(
+                        xs,
+                        ys,
+                        s=6,
+                        zorder=4,
+                        color=color,
+                        label="_nolegend_",
                     )
-                    axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
+                    scatter.set_visible(visible)
                 plotted_points = load_cut_points
             else:
                 xs = [point[0] for point in points]
                 ys = [point[1] for point in points]
-                axis.plot(xs, ys, linewidth=1.0, label=label)
-                axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
+                color = self._zone_line_color(label)
+                line = axis.plot(xs, ys, linewidth=1.0, label=label, color=color)[0]
+                line.set_visible(visible)
+                fill = axis.fill(
+                    xs,
+                    ys,
+                    color=line.get_color(),
+                    alpha=0.10,
+                    linewidth=0,
+                    label="_nolegend_",
+                    zorder=0,
+                )[0]
+                fill.set_visible(visible)
+                scatter = axis.scatter(xs, ys, s=6, zorder=4, label="_nolegend_")
+                scatter.set_visible(visible)
+                line_by_label[label] = line
                 plotted_points = points
 
-            for point_label, (x_value, y_value) in zip(
-                self._phs_point_labels_for_panel(panel, len(plotted_points)),
-                plotted_points,
-                strict=False,
-            ):
-                point_targets.append((f"{label} {point_label}", x_value, y_value))
-                if self._show_point_labels:
-                    axis.annotate(
-                        point_label,
-                        (x_value, y_value),
-                        textcoords="offset points",
-                        xytext=(5, 5),
-                        fontsize=8,
-                    )
-            self._plot_sensitive_distance_zone_on_phs(panel)
-            self._plot_phs_ld_zones(axis, result)
+            if visible:
+                for point_label, (x_value, y_value) in zip(
+                    self._phs_point_labels_for_panel(panel, len(plotted_points)),
+                    plotted_points,
+                    strict=False,
+                ):
+                    point_targets.append((f"{label} {point_label}", x_value, y_value))
+                    if self._show_point_labels:
+                        axis.annotate(
+                            point_label,
+                            (x_value, y_value),
+                            textcoords="offset points",
+                            xytext=(5, 5),
+                            fontsize=8,
+                        )
+            point_targets.extend(self._plot_sensitive_distance_zone_on_phs(panel, line_by_label))
+            self._plot_phs_ld_zones(axis, result, line_by_label)
             for ld_label, ld_points in self._phs_ld_overlays(result):
-                for point_label, x_value, y_value in ld_points:
-                    point_targets.append((f"{ld_label} {point_label}", x_value, y_value))
+                if self._phs_zone_visibility.get(ld_label, True):
+                    for point_label, x_value, y_value in ld_points:
+                        point_targets.append((f"{ld_label} {point_label}", x_value, y_value))
             self._autoscale_visible(axis)
             self._shade_rld_regions(
                 axis,
                 self._phs_ld_overlays(result),
                 {"Ld Fw": True, "Ld Rv": True},
             )
-            axis.legend(loc="upper left")
+            legend = axis.legend(loc="upper left") if line_by_label else None
+            if legend is not None:
+                for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
+                    legend_label = text.get_text()
+                    legend_visible = self._phs_zone_visibility.get(legend_label, True)
+                    legend_line.set_picker(8)
+                    text.set_picker(True)
+                    legend_line.set_alpha(1.0 if legend_visible else 0.25)
+                    text.set_alpha(1.0 if legend_visible else 0.35)
+                    legend_line._rel_phs_zone_label = legend_label  # type: ignore[attr-defined]
+                    text._rel_phs_zone_label = legend_label  # type: ignore[attr-defined]
+            self._connect_phs_legend_picker(panel, line_by_label)
             self._connect_phs_point_tooltip(panel, point_targets)
             panel.redraw()
+
+    @staticmethod
+    def _phs_three_phase_point(re_value: float, im_value: float) -> tuple[float, float]:
+        if re_value != 0.0:
+            angle_deg = atan(im_value / re_value) * 180.0 / pi
+            if re_value < 0.0:
+                angle_deg += 180.0
+        else:
+            angle_deg = -90.0 if im_value < 0.0 else 90.0
+        magnitude = (re_value * re_value + im_value * im_value) ** 0.5
+        rotated_angle = (angle_deg + 30.0) * pi / 180.0
+        scale = 2.0 / sqrt(3.0)
+        return (
+            scale * magnitude * cos(rotated_angle),
+            scale * magnitude * sin(rotated_angle),
+        )
 
     def _phs_point_labels_for_panel(self, panel: MatplotlibPanel, count: int) -> list[str]:
         if panel is self.phs_phase_phase_2ph_panel:
             return ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "II"][:count]
+        if panel is self.phs_phase_phase_3ph_panel:
+            return ["AA'", "BB'", "CC'", "DD'", "EE'", "FF'", "GG'", "HH'"][:count]
         if panel is self.phs_phase_ground_panel:
             return ["AA''", "BB''", "CC''", "DD''", "EE''", "FF''", "GG''", "HH''", "II''"][:count]
         return self._point_labels_for_count(count)
@@ -1631,6 +1683,26 @@ class MainWindow(QMainWindow):
         if cid is not None:
             panel.canvas.mpl_disconnect(cid)
         panel._rel_phs_motion_cid = self._connect_point_tooltip(panel, targets)  # type: ignore[attr-defined]
+
+    def _connect_phs_legend_picker(
+        self,
+        panel: MatplotlibPanel,
+        line_by_label: dict[str, object],
+    ) -> None:
+        panel_key = id(panel)
+        previous_cid = self._phs_pick_cids.get(panel_key)
+        if previous_cid is not None:
+            panel.canvas.mpl_disconnect(previous_cid)
+
+        def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
+            label = getattr(event.artist, "_rel_phs_zone_label", None)
+            if label not in line_by_label:
+                return
+            current = self._phs_zone_visibility.get(label, True)
+            self._phs_zone_visibility[label] = not current
+            self._plot_phs_graphs()
+
+        self._phs_pick_cids[panel_key] = panel.canvas.mpl_connect("pick_event", toggle_zone)
 
     @staticmethod
     def _phs_load_cut_values(result: PhsSelectorResult) -> tuple[float, float, float] | None:
@@ -1698,22 +1770,37 @@ class MainWindow(QMainWindow):
             ),
         ]
 
-    def _plot_phs_ld_zones(self, axis, result: PhsSelectorResult) -> None:  # type: ignore[no-untyped-def]
+    def _plot_phs_ld_zones(
+        self,
+        axis,
+        result: PhsSelectorResult,
+        line_by_label: dict[str, object],
+    ) -> None:  # type: ignore[no-untyped-def]
         for label, points in self._phs_ld_overlays(result):
+            self._phs_zone_visibility.setdefault(label, True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
-            axis.plot(
+            line = axis.plot(
                 xs,
                 ys,
                 linewidth=1.0,
                 color=self._zone_line_color(label),
                 label=label,
-            )
+            )[0]
+            visible = self._phs_zone_visibility.get(label, True)
+            line.set_visible(visible)
+            line_by_label[label] = line
 
-    def _plot_sensitive_distance_zone_on_phs(self, panel: MatplotlibPanel) -> None:
+    def _plot_sensitive_distance_zone_on_phs(
+        self,
+        panel: MatplotlibPanel,
+        line_by_label: dict[str, object],
+    ) -> list[tuple[str, float, float]]:
+        label = "Чутлива зона"
+        self._phs_zone_visibility.setdefault(label, True)
         stage = self._selected_sensitive_stage()
         if stage is None:
-            return
+            return []
         try:
             if panel is self.phs_phase_ground_panel:
                 zones = phase_ground_zone_polygons(
@@ -1724,19 +1811,60 @@ class MainWindow(QMainWindow):
                     [self._phase_phase_stage_input(stage)]
                 )
         except (TypeError, ValueError):
-            return
+            return []
         if not zones:
-            return
+            return []
         zone = zones[0]
         xs = [point[0] for point in zone.points]
         ys = [point[1] for point in zone.points]
-        panel.axis.plot(
+        color = self._zone_line_color(zone.name) or "#334155"
+        line = panel.axis.plot(
             xs,
             ys,
             linewidth=1.0,
-            color="#475569",
-            label="Чутлива зона",
+            color=color,
+            label=label,
+        )[0]
+        visible = self._phs_zone_visibility.get(label, True)
+        line.set_visible(visible)
+        panel.axis.fill(
+            xs,
+            ys,
+            color=line.get_color(),
+            alpha=0.10,
+            linewidth=0,
+            label="_nolegend_",
+            zorder=0,
+        )[0].set_visible(visible)
+        scatter = panel.axis.scatter(
+            xs,
+            ys,
+            s=9,
+            zorder=4,
+            color=line.get_color(),
+            label="_nolegend_",
         )
+        scatter.set_visible(visible)
+        line_by_label[label] = line
+        targets: list[tuple[str, float, float]] = []
+        if not visible:
+            return targets
+        for point_label, x_value, y_value in zip(
+            self._point_labels_for_count(len(zone.points)),
+            xs,
+            ys,
+            strict=False,
+        ):
+            targets.append((f"Чутлива зона {point_label}", x_value, y_value))
+            if self._show_point_labels:
+                panel.axis.annotate(
+                    point_label,
+                    (x_value, y_value),
+                    textcoords="offset points",
+                    xytext=(5, 5),
+                    fontsize=8,
+                )
+        return targets
 
     def _shade_phs_load_cut(self, axis, result: PhsSelectorResult) -> None:  # type: ignore[no-untyped-def]
         values = self._phs_load_cut_values(result)
@@ -1965,14 +2093,62 @@ class MainWindow(QMainWindow):
             filtered.append(point)
         return tuple(filtered)
 
+    @staticmethod
+    def _default_zone_colors() -> dict[str, str]:
+        return {
+            "1 ступінь": "#2563eb",
+            "2 ступінь": "#f97316",
+            "3 ступінь": "#16a34a",
+            "4 ступінь": "#dc2626",
+            "5 ступінь": "#9333ea",
+            "PSD": "#7c3aed",
+            "RLD inner": "#0e7490",
+            "RLD outer": "#0369a1",
+            "Ld Fw": "#f59e0b",
+            "Ld Rv": "#f59e0b",
+            "Zнав Fw": "#92400e",
+            "Zнав Rv": "#db2777",
+            "PHS": "#2563eb",
+            "Виріз від навантаження": "#7c3aed",
+        }
+
+    def _zone_color_options(self) -> list[tuple[str, str]]:
+        return [
+            ("1 ступінь", "Дистанційна зона: 1 ступінь"),
+            ("2 ступінь", "Дистанційна зона: 2 ступінь"),
+            ("3 ступінь", "Дистанційна зона: 3 ступінь"),
+            ("4 ступінь", "Дистанційна зона: 4 ступінь"),
+            ("5 ступінь", "Дистанційна зона: 5 ступінь"),
+            ("PSD", "PSD: зона"),
+            ("RLD inner", "RLD: внутрішня межа"),
+            ("RLD outer", "RLD: зовнішня межа"),
+            ("Ld Fw", "LD: прямий напрямок"),
+            ("Ld Rv", "LD: зворотний напрямок"),
+            ("Zнав Fw", "Опір навантаження: прямий напрямок"),
+            ("Zнав Rv", "Опір навантаження: зворотний напрямок"),
+            ("PHS", "PHS: зона"),
+            ("Виріз від навантаження", "PHS: виріз від навантаження"),
+        ]
+
     def _zone_line_style(self, label: str) -> str:
         return "--" if label.startswith("RLD inner") else "-"
 
     def _zone_line_color(self, label: str) -> str | None:
-        if label.startswith("RLD "):
-            return "#16697a"
         if label.startswith("Ld "):
-            return "#7c3aed"
+            return self._zone_colors.get("Ld Fw")
+        if label.startswith("PSD "):
+            return self._zone_colors.get("PSD")
+        if label.startswith("PHS "):
+            return self._zone_colors.get("PHS")
+        if label in self._zone_colors:
+            return self._zone_colors[label]
+        for key in self._zone_colors:
+            if label.startswith(key):
+                return self._zone_colors[key]
+        if "ступінь" in label:
+            for key in ("1 ступінь", "2 ступінь", "3 ступінь", "4 ступінь", "5 ступінь"):
+                if label.startswith(key):
+                    return self._zone_colors.get(key)
         return None
 
     def _legend_label_for_group(self, label: str, plotted_labels: set[str]) -> str:
@@ -1999,9 +2175,25 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                label=zone.name,
+                color=self._zone_line_color(zone.name),
+            )[0]
             visible = self._psd_phase_phase_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
+            fill = axis.fill(
+                xs,
+                ys,
+                color=line.get_color(),
+                alpha=0.10,
+                linewidth=0,
+                label="_nolegend_",
+                zorder=0,
+            )[0]
+            fill.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
                 point_labels = self._point_labels_for_count(len(zone.points))
@@ -2100,9 +2292,25 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                label=zone.name,
+                color=self._zone_line_color(zone.name),
+            )[0]
             visible = self._psd_phase_ground_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
+            fill = axis.fill(
+                xs,
+                ys,
+                color=line.get_color(),
+                alpha=0.10,
+                linewidth=0,
+                label="_nolegend_",
+                zorder=0,
+            )[0]
+            fill.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
                 axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
@@ -2233,7 +2441,13 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                label=zone.name,
+                color=self._zone_line_color(zone.name),
+            )[0]
             visible = self._distance_phase_phase_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
             fill = axis.fill(
@@ -2342,7 +2556,13 @@ class MainWindow(QMainWindow):
         for zone in zones:
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
-            line = axis.plot(xs, ys, linewidth=1.0, label=zone.name)[0]
+            line = axis.plot(
+                xs,
+                ys,
+                linewidth=1.0,
+                label=zone.name,
+                color=self._zone_line_color(zone.name),
+            )[0]
             visible = self._distance_phase_ground_zone_visibility.get(zone.name, True)
             line.set_visible(visible)
             fill = axis.fill(
@@ -3132,6 +3352,22 @@ class MainWindow(QMainWindow):
         encoded = b64encode(buffer.getvalue()).decode("ascii")
         return f"data:image/png;base64,{encoded}"
 
+    def _phs_report_graphs_html(self) -> str:
+        items = [
+            (self._translator.text("phs.phase_phase_2ph"), self.phs_phase_phase_2ph_panel),
+            (self._translator.text("phs.phase_phase_3ph"), self.phs_phase_phase_3ph_panel),
+            (self._translator.text("phs.phase_ground"), self.phs_phase_ground_panel),
+            (self._translator.text("phs.load_cut"), self.phs_load_cut_panel),
+        ]
+        html = ["<h3>Графіки PHS</h3>"]
+        for title, panel in items:
+            uri = self._figure_data_uri(panel)
+            html.append(f"<p><b>{self._html(title)}</b></p>")
+            html.append(
+                f"<p><img src='{uri}' width='680' alt='{self._html(title)}' /></p>"
+            )
+        return "\n".join(html)
+
     def _psd_included_stages_table(self, result: PsbBlockingResult) -> str:
         included_names = (
             set(result.included_forward_stage_names)
@@ -3739,6 +3975,7 @@ class MainWindow(QMainWindow):
                     f"ArgLd = {n(result.arg_ld)} (град)."
                 )
                 + "</p>",
+                self._phs_report_graphs_html(),
                 "<h3>6. Прийняті уставки PHS</h3>",
                 self._phs_journal_report(include_heading=False),
             ]
@@ -5731,12 +5968,54 @@ class MainWindow(QMainWindow):
             self._translator,
             self,
             show_point_labels=self._show_point_labels,
+            zone_colors=self._zone_colors,
+            zone_color_options=self._zone_color_options(),
         )
         if dialog.exec():
-            self._translator.set_language(dialog.selected_language)
-            self._show_point_labels = dialog.show_point_labels
-            self._retranslate()
-            self._redraw_psd_charts()
+            progress = self._create_progress_dialog(
+                self._translator.text("progress.apply_settings")
+            )
+            try:
+                self._advance_progress(
+                    progress,
+                    self._translator.text("progress.settings_language"),
+                    1,
+                )
+                self._translator.set_language(dialog.selected_language)
+                self._show_point_labels = dialog.show_point_labels
+                self._zone_colors = dialog.zone_colors
+                self._advance_progress(
+                    progress,
+                    self._translator.text("progress.settings_interface"),
+                    2,
+                )
+                self._retranslate()
+                self._advance_progress(
+                    progress,
+                    self._translator.text("progress.settings_graphs"),
+                    3,
+                )
+                self._redraw_psd_charts()
+                self._advance_progress(
+                    progress,
+                    self._translator.text("progress.settings_graphs"),
+                    4,
+                )
+                self._plot_phs_graphs()
+                self._advance_progress(
+                    progress,
+                    self._translator.text("progress.report"),
+                    5,
+                )
+                if self._last_phs_result is not None:
+                    self.phs_report_tab.setHtml(self._build_phs_report())
+                self._advance_progress(
+                    progress,
+                    self._translator.text("progress.done"),
+                    6,
+                )
+            finally:
+                progress.close()
 
     def _set_report_zoom(self, editor: QTextEdit, value: int) -> None:
         font = editor.document().defaultFont()
@@ -5763,6 +6042,18 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
         layout.addWidget(splitter, 1)
+        zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        zoom_slider.setRange(80, 160)
+        zoom_slider.setValue(100)
+        zoom_slider.setFixedWidth(120)
+        zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        zoom_slider.setTickInterval(20)
+        zoom_slider.valueChanged.connect(lambda value: self._set_report_zoom(content, value))
+        footer = QHBoxLayout()
+        footer.addStretch()
+        footer.addWidget(QLabel(self._translator.text("report.zoom")))
+        footer.addWidget(zoom_slider)
+        layout.addLayout(footer)
 
         def show_section(row: int) -> None:
             if row < 0:
@@ -6001,10 +6292,6 @@ class MainWindow(QMainWindow):
         self._retranslate_segmented_module(self.phs_tabs, "PHS")
         self.export_psd_report_button.setText(t("button.export_word"))
         self.export_psd_settings_button.setText(t("button.export_word"))
-        self.export_psd_phase_phase_graph_button.setText(t("button.export_graph"))
-        self.export_psd_phase_ground_graph_button.setText(t("button.export_graph"))
-        self.export_distance_phase_phase_graph_button.setText(t("button.export_graph"))
-        self.export_distance_phase_ground_graph_button.setText(t("button.export_graph"))
         self.export_phs_settings_button.setText(t("button.export_word"))
         self.export_phs_report_button.setText(t("button.export_word"))
         self.psd_report_search.setPlaceholderText(t("report.search_placeholder"))

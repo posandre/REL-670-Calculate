@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from matplotlib.axes import Axes
+from matplotlib.ticker import AutoMinorLocator
 
 from app.models.electrical import ImpedancePoint
 from app.models.protection import DistanceZonePolygon, PsbCharacteristic
@@ -12,7 +13,10 @@ def configure_rx_axes(axis: Axes, labels: dict[str, str]) -> None:
     axis.set_ylabel(labels["x_axis"])
     axis.axhline(0.0, color="#7a8491", linewidth=0.8)
     axis.axvline(0.0, color="#7a8491", linewidth=0.8)
-    axis.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.55)
+    axis.xaxis.set_minor_locator(AutoMinorLocator(3))
+    axis.yaxis.set_minor_locator(AutoMinorLocator(3))
+    axis.grid(True, which="major", linestyle="--", linewidth=0.55, alpha=0.55)
+    axis.grid(True, which="minor", linestyle="--", linewidth=0.35, alpha=0.28)
     axis.set_aspect("equal", adjustable="datalim")
 
 
