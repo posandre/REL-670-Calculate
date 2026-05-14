@@ -11,11 +11,9 @@ from itertools import pairwise
 from math import atan, ceil, cos, pi, sin, sqrt, tan
 from pathlib import Path
 from shutil import copy2
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
-from matplotlib.lines import Line2D
-from matplotlib.patches import Polygon
-from PySide6.QtCore import QEvent, QObject, QStandardPaths, Qt
+from PySide6.QtCore import QEvent, QObject, QStandardPaths, QTimer, Qt
 from PySide6.QtGui import QFontMetrics, QIcon, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -83,10 +81,14 @@ from app.services.calculations.psb_blocking_settings import (
 )
 from app.ui.dialogs.project_manager_dialog import ProjectManagerDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
-from app.ui.widgets.matplotlib_canvas import MatplotlibPanel
 from app.ui.widgets.source_data_widget import SourceDataWidget
 from app.utils.docx_export import export_html_to_docx
 from app.utils.serialization import to_json
+
+if TYPE_CHECKING:
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Polygon
+    from app.ui.widgets.matplotlib_canvas import MatplotlibPanel
 
 OverlayPoint = tuple[str, float, float]
 OverlayPolygon = tuple[str, tuple[OverlayPoint, ...]]
@@ -165,6 +167,8 @@ class MainWindow(QMainWindow):
         self._psd_tab_index = 2
         self._phs_tab_index = 3
         self._journal_tab_index = 4
+        self._lazy_tab_builders: dict[int, Callable[[], QWidget]] = {}
+        self._lazy_tabs_ready: set[int] = set()
 
         database_path = self._database_path()
         engine = create_sqlite_engine(database_path)
@@ -173,13 +177,13 @@ class MainWindow(QMainWindow):
 
         self._build_actions()
         self._build_ui()
-        self._load_example_data()
         self._connect_dirty_tracking()
         self._install_locked_input_warning_filter()
         self._dirty = False
         self._retranslate()
         self._apply_pointer_cursors()
         self._update_result_tab_state()
+        QTimer.singleShot(0, self._deferred_startup)
 
     def _default_data_dir(self) -> Path:
         if getattr(sys, "frozen", False):
@@ -221,6 +225,9 @@ class MainWindow(QMainWindow):
 
     def _database_has_content(self, path: Path) -> bool:
         return path.exists() and path.stat().st_size > 8192
+
+    def _deferred_startup(self) -> None:
+        self._load_example_data()
 
     def _build_actions(self) -> None:
         self.file_menu = self.menuBar().addMenu("")
@@ -273,11 +280,11 @@ class MainWindow(QMainWindow):
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
 
-        self.rx_panel = MatplotlibPanel()
-        self.psd_phase_phase_panel = MatplotlibPanel()
-        self.psd_phase_ground_panel = MatplotlibPanel()
-        self.distance_phase_phase_panel = MatplotlibPanel()
-        self.distance_phase_ground_panel = MatplotlibPanel()
+        self.rx_panel = self._new_matplotlib_panel()
+        self.psd_phase_phase_panel = None
+        self.psd_phase_ground_panel = None
+        self.distance_phase_phase_panel = None
+        self.distance_phase_ground_panel = None
         self.report_text = QTextEdit()
         self.report_text.setReadOnly(True)
         self.psd_report_text = QTextEdit()
@@ -338,19 +345,54 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_input_tab(), "")
-        self.tabs.addTab(self._build_distance_zones_tab(), "")
-        self.tabs.addTab(self._build_psd_tab(), "")
-        self.tabs.addTab(self._build_phs_tab(), "")
-        self.tabs.addTab(self._build_journal_tab(), "")
+        self.tabs.addTab(self._lazy_tab_placeholder(self._distance_tab_index), "")
+        self.tabs.addTab(self._lazy_tab_placeholder(self._psd_tab_index), "")
+        self.tabs.addTab(self._lazy_tab_placeholder(self._phs_tab_index), "")
+        self.tabs.addTab(self._lazy_tab_placeholder(self._journal_tab_index), "")
+        self._lazy_tab_builders = {
+            self._distance_tab_index: self._build_distance_zones_tab,
+            self._psd_tab_index: self._build_psd_tab,
+            self._phs_tab_index: self._build_phs_tab,
+            self._journal_tab_index: self._build_journal_tab,
+        }
         self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("")
-        self.tabs.currentChanged.connect(self._guard_result_tabs)
+        self.tabs.currentChanged.connect(self._on_main_tab_changed)
 
     def _resource_path(self, relative_path: str) -> Path:
         frozen_root = getattr(sys, "_MEIPASS", None)
         if frozen_root:
             return Path(frozen_root) / relative_path
         return Path(__file__).resolve().parents[4] / relative_path
+
+    def _new_matplotlib_panel(self) -> MatplotlibPanel:
+        from app.ui.widgets.matplotlib_canvas import MatplotlibPanel as _MatplotlibPanel
+
+        return _MatplotlibPanel()
+
+    def _lazy_tab_placeholder(self, index: int) -> QWidget:
+        page = QWidget()
+        page.setProperty("lazy_index", index)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addStretch()
+        return page
+
+    def _ensure_tab_initialized(self, index: int) -> None:
+        if index in self._lazy_tabs_ready:
+            return
+        builder = self._lazy_tab_builders.get(index)
+        if builder is None:
+            return
+        widget = builder()
+        self.tabs.removeTab(index)
+        self.tabs.insertTab(index, widget, "")
+        self._lazy_tabs_ready.add(index)
+        self._retranslate()
+
+    def _on_main_tab_changed(self, index: int) -> None:
+        self._ensure_tab_initialized(index)
+        self._guard_result_tabs(index)
 
     def _route_panel_coordinates_to_status(self, panel: MatplotlibPanel) -> None:
         if getattr(panel, "_rel_status_coordinates", False):
@@ -473,10 +515,10 @@ class MainWindow(QMainWindow):
 
     def _build_phs_tab(self) -> QWidget:
         self.phs_settings_tab = self._phs_settings_table()
-        self.phs_phase_phase_2ph_panel = MatplotlibPanel()
-        self.phs_phase_phase_3ph_panel = MatplotlibPanel()
-        self.phs_phase_ground_panel = MatplotlibPanel()
-        self.phs_load_cut_panel = MatplotlibPanel()
+        self.phs_phase_phase_2ph_panel = self._new_matplotlib_panel()
+        self.phs_phase_phase_3ph_panel = self._new_matplotlib_panel()
+        self.phs_phase_ground_panel = self._new_matplotlib_panel()
+        self.phs_load_cut_panel = self._new_matplotlib_panel()
         self.phs_report_tab = QTextEdit()
         self.phs_report_tab.setReadOnly(True)
         self.phs_report_tab.setPlainText("PHS: розрахунок буде додано на наступному етапі.")
@@ -663,6 +705,7 @@ class MainWindow(QMainWindow):
     def _build_distance_phase_phase_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self.distance_phase_phase_panel = self._new_matplotlib_panel()
         self._route_panel_coordinates_to_status(self.distance_phase_phase_panel)
         self._build_distance_drag_actions("phase_phase")
         layout.addWidget(self.distance_phase_phase_panel)
@@ -671,6 +714,7 @@ class MainWindow(QMainWindow):
     def _build_distance_phase_ground_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self.distance_phase_ground_panel = self._new_matplotlib_panel()
         self._route_panel_coordinates_to_status(self.distance_phase_ground_panel)
         self._build_distance_drag_actions("phase_ground")
         layout.addWidget(self.distance_phase_ground_panel)
@@ -716,6 +760,7 @@ class MainWindow(QMainWindow):
     def _build_psd_phase_phase_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self.psd_phase_phase_panel = self._new_matplotlib_panel()
         self._route_panel_coordinates_to_status(self.psd_phase_phase_panel)
         layout.addWidget(self.psd_phase_phase_panel)
         return page
@@ -723,6 +768,7 @@ class MainWindow(QMainWindow):
     def _build_psd_phase_ground_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        self.psd_phase_ground_panel = self._new_matplotlib_panel()
         self._route_panel_coordinates_to_status(self.psd_phase_ground_panel)
         layout.addWidget(self.psd_phase_ground_panel)
         return page
@@ -891,6 +937,8 @@ class MainWindow(QMainWindow):
         self._calculate("psd")
 
     def _calculate_phs(self, *, skip_validation: bool = False) -> None:
+        self._ensure_tab_initialized(self._phs_tab_index)
+        self._ensure_tab_initialized(self._journal_tab_index)
         if not skip_validation:
             errors = self.source_data_widget.validate_for_calculation("phs")
             if errors:
@@ -1032,7 +1080,7 @@ class MainWindow(QMainWindow):
         source_panel: MatplotlibPanel,
         labels: dict[str, str],
     ) -> MatplotlibPanel:
-        panel = MatplotlibPanel()
+        panel = self._new_matplotlib_panel()
         axis = panel.axis
         axis.clear()
         configure_rx_axes(axis, labels)
@@ -1098,6 +1146,9 @@ class MainWindow(QMainWindow):
         return panel
 
     def _calculate(self, mode: str = "all", *, skip_validation: bool = False) -> bool:
+        self._ensure_tab_initialized(self._distance_tab_index)
+        self._ensure_tab_initialized(self._psd_tab_index)
+        self._ensure_tab_initialized(self._journal_tab_index)
         if not skip_validation:
             errors = self.source_data_widget.validate_for_calculation(mode)
             if errors:
@@ -1220,13 +1271,16 @@ class MainWindow(QMainWindow):
             self.distance_phase_phase_panel,
             self.distance_phase_ground_panel,
         ):
+            if panel is None:
+                continue
             panel.axis.clear()
             panel.redraw()
-        for row in range(self.psd_reach_table.rowCount()):
-            name_item = self.psd_reach_table.item(row, 0)
-            value_item = self.psd_reach_table.item(row, 1)
-            if name_item is not None and value_item is not None:
-                value_item.setText(self._default_psd_value(name_item.text()))
+        if hasattr(self, "psd_reach_table"):
+            for row in range(self.psd_reach_table.rowCount()):
+                name_item = self.psd_reach_table.item(row, 0)
+                value_item = self.psd_reach_table.item(row, 1)
+                if name_item is not None and value_item is not None:
+                    value_item.setText(self._default_psd_value(name_item.text()))
         self.validation_message.hide()
         self.source_data_widget.clear_validation_errors()
         if update_lock:
@@ -7041,10 +7095,13 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(2, t("tab.psd"))
         self.tabs.setTabText(3, t("tab.phs"))
         self.tabs.setTabText(4, t("tab.journal"))
-        self._retranslate_segmented_module(self.distance_tabs, t("tab.distance_zones"))
-        self._update_distance_phase_ground_tab()
-        self._retranslate_segmented_module(self.psd_tabs, "PSD")
-        self._retranslate_segmented_module(self.phs_tabs, "PHS")
+        if hasattr(self, "distance_tabs"):
+            self._retranslate_segmented_module(self.distance_tabs, t("tab.distance_zones"))
+            self._update_distance_phase_ground_tab()
+        if hasattr(self, "psd_tabs"):
+            self._retranslate_segmented_module(self.psd_tabs, "PSD")
+        if hasattr(self, "phs_tabs"):
+            self._retranslate_segmented_module(self.phs_tabs, "PHS")
         self.export_psd_report_button.setText(t("button.export_word"))
         self.export_psd_settings_button.setText(t("button.export_word"))
         self.export_phs_settings_button.setText(t("button.export_word"))
@@ -7087,13 +7144,14 @@ class MainWindow(QMainWindow):
             self._fit_segment_button_width(button)
 
     def _retranslate_psd_tables(self) -> None:
-        self.psd_reach_table.setHorizontalHeaderLabels(
-            [
-                self._translator.text("table.name"),
-                self._translator.text("report.psd_setting_value"),
-                self._translator.text("psd.unit").capitalize(),
-            ]
-        )
+        if hasattr(self, "psd_reach_table"):
+            self.psd_reach_table.setHorizontalHeaderLabels(
+                [
+                    self._translator.text("table.name"),
+                    self._translator.text("report.psd_setting_value"),
+                    self._translator.text("psd.unit").capitalize(),
+                ]
+            )
         if hasattr(self, "phs_settings_tab"):
             self.phs_settings_tab.setHorizontalHeaderLabels(
                 [
