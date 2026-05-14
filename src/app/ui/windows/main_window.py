@@ -182,18 +182,42 @@ class MainWindow(QMainWindow):
         self._update_result_tab_state()
 
     def _default_data_dir(self) -> Path:
-        path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-        return Path(path) if path else Path.cwd() / ".rel_psd"
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "data"
+        return Path(__file__).resolve().parents[4] / "data"
 
     def _database_path(self) -> Path:
         current_dir = self._default_data_dir()
         current_dir.mkdir(parents=True, exist_ok=True)
         current_path = current_dir / "rel_psd.sqlite"
-        legacy_path = current_dir.parent / "REL-PSD" / "rel_psd.sqlite"
-        if legacy_path.exists() and not self._database_has_content(current_path):
-            copy2(legacy_path, current_path)
-            legacy_path.unlink()
+        if not self._database_has_content(current_path):
+            for legacy_path in self._legacy_database_paths(current_dir):
+                if not legacy_path.exists() or not self._database_has_content(legacy_path):
+                    continue
+                copy2(legacy_path, current_path)
+                try:
+                    legacy_path.unlink()
+                except OSError:
+                    pass
+                break
         return current_path
+
+    def _legacy_database_paths(self, current_dir: Path) -> tuple[Path, ...]:
+        legacy_paths: list[Path] = []
+        app_data_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+        if app_data_path:
+            app_data_dir = Path(app_data_path)
+            legacy_paths.append(app_data_dir / "rel_psd.sqlite")
+            legacy_paths.append(app_data_dir.parent / "REL-PSD" / "rel_psd.sqlite")
+        old_app_data_dir = Path.home() / "Library" / "Application Support" / "REL-PSD"
+        legacy_paths.append(old_app_data_dir / "rel_psd.sqlite")
+        legacy_paths.append(old_app_data_dir.parent / "REL-PSD" / "rel_psd.sqlite")
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            legacy_paths.append(exe_dir / "rel_psd.sqlite")
+            legacy_paths.append(exe_dir / ".rel_psd" / "rel_psd.sqlite")
+        legacy_paths.append(current_dir.parent / "REL-PSD" / "rel_psd.sqlite")
+        return tuple(dict.fromkeys(legacy_paths))
 
     def _database_has_content(self, path: Path) -> bool:
         return path.exists() and path.stat().st_size > 8192
