@@ -1,0 +1,149 @@
+{
+  "format": "REL-PSD project",
+  "version": 1,
+  "metadata": {
+    "name": "RET670 PSB Study",
+    "author": "Андрій",
+    "language": "uk",
+    "created_at": "2026-05-06T18:58:51.028602",
+    "updated_at": "2026-05-06T18:58:51.028602"
+  },
+  "input": {
+    "impedance_points": [],
+    "phasors": [],
+    "source_data": {
+      "protection_type": 1,
+      "transformers": {
+        "ktc_primary": "500",
+        "ktc_secondary": "5",
+        "ktn_primary": "100",
+        "ktn_secondary": "0.1"
+      },
+      "sensitivity_factor": "1,10",
+      "psd_sensitivity_factor": "1,10",
+      "phs_sensitivity_factor": "1,20",
+      "engineering_settings": {
+        "delta_phi_deg": "5",
+        "rejection_factor": "0,85",
+        "delta_r_fw_rv": "1",
+        "sensitive_stage": 3
+      },
+      "settings": {
+        "direction": [
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "X1": [
+          "17",
+          "27",
+          "74",
+          "2",
+          "150"
+        ],
+        "R1": [
+          "7,64",
+          "11,46",
+          "31,41",
+          "1,62",
+          "63,67"
+        ],
+        "X0": [
+          "17",
+          "27",
+          "74",
+          "2",
+          "150"
+        ],
+        "R0": [
+          "7,64",
+          "11,46",
+          "31,41",
+          "1,62",
+          "63,67"
+        ],
+        "RPFF": [
+          "20",
+          "50",
+          "80",
+          "8",
+          "120"
+        ],
+        "RFPE": [
+          "10",
+          "25",
+          "40",
+          "8",
+          "120"
+        ],
+        "TPP": [
+          "0",
+          "1,4",
+          "2,6",
+          "0,4",
+          "5,4"
+        ],
+        "TPE": [
+          "0",
+          "1,4",
+          "2,6",
+          "0,4",
+          "5,4"
+        ],
+        "ArgNegRes": [
+          "115",
+          "115",
+          "115",
+          "-65",
+          "115"
+        ],
+        "ArgDir": [
+          "15",
+          "15",
+          "15",
+          "15",
+          "15"
+        ],
+        "Фл": [
+          "65,80",
+          "67,00",
+          "67,00",
+          "50,99",
+          "67,00"
+        ],
+        "Флк": [
+          "65,80",
+          "67,00",
+          "67,00",
+          "50,99",
+          "67,00"
+        ]
+      },
+      "load_modes": [
+        [
+          "Forward",
+          "500",
+          "110",
+          "35",
+          "Макс.авар.перетік від Рівне"
+        ],
+        [
+          "Revers",
+          "300",
+          "90",
+          "35",
+          "Макс.авар.перетік до Рівне"
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "distance_zones": [],
+    "psb_settings": null
+  },
+  "results": {
+    "calculation": null
+  }
+}
