@@ -226,7 +226,7 @@ def psb_blocking_settings(
 
     r1l_in_fw = _divide_by_tan(x1_in_fw, load_angle_fw)
     r1l_in_rv = _divide_by_tan(x1_in_rv, load_angle_rv)
-    r1l_in = _round_setting(_max_or_none([r1l_in_fw, r1l_in_rv]))
+    r1l_in = _round_setting_hundredths(_max_or_none([r1l_in_fw, r1l_in_rv]))
     load_cut_result = _calculate_load_cut(load_cut, r1f_in_fw, r1f_in_rv)
 
     return PsbBlockingResult(
@@ -435,3 +435,10 @@ def _round_setting(value: float | None) -> float | None:
     if value is None:
         return None
     return float(ceil(value))
+
+
+def _round_setting_hundredths(value: float | None) -> float | None:
+    """Round selected setting to hundredths."""
+    if value is None:
+        return None
+    return round(value, 2)

@@ -83,7 +83,7 @@ def test_psb_blocking_settings_uses_directional_extremes() -> None:
     assert result.r1f_in_fw == 6.0
     assert result.x1_in_rv == 11.0
     assert result.r1f_in_rv == 7.0
-    assert result.r1l_in == 8.0
+    assert result.r1l_in == 7.0
 
 
 def test_psb_setting_rounding_is_upward() -> None:

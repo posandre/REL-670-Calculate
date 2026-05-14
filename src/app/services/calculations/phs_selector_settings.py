@@ -90,7 +90,7 @@ def phs_selector_settings(
     rffw_pp_three_phase = (
         phs_sensitivity_factor * (2.0 * stage.r1 + stage.rfpp) * 2.0 / sqrt(3.0)
     )
-    rffw_pp = max(rffw_pp_two_phase, rffw_pp_three_phase)
+    rffw_pp = ceil(max(rffw_pp_two_phase, rffw_pp_three_phase))
     rfrv_pp = rffw_pp
     if (stage.load_angle_ground_deg or 0.0) > 60.0:
         rffw_pe = ceil(phs_sensitivity_factor * stage.rfpe)

@@ -46,10 +46,11 @@ def test_phs_selector_calculates_core_settings_without_psd() -> None:
         result.x1_three_phase_q1,
         result.x1_three_phase_q4,
     )
-    assert result.rffw_pp == max(
+    assert result.rffw_pp == ceil(max(
         result.rffw_pp_two_phase,
         result.rffw_pp_three_phase,
-    )
+    ))
+    assert result.rfrv_pp == result.rffw_pp
     expected_rfrv_pe = 1.1 * (10.0 + (16.0 - 10.0) / 3.0) * tan((115.0 - 90.0) * pi / 180.0)
     assert result.rfrv_pe == ceil(expected_rfrv_pe)
     expected_rffw_pe = 1.1 * 2.0 * (
