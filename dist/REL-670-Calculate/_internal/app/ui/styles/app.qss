@@ -1,0 +1,233 @@
+QMainWindow {
+    background: #f4f6f8;
+}
+
+QMenuBar, QMenu {
+    background: #ffffff;
+    color: #1f2937;
+}
+
+QTabWidget::pane {
+    border: 1px solid #d7dde5;
+    background: #ffffff;
+}
+
+QTabBar::tab {
+    background: #e9edf3;
+    color: #4b5563;
+    padding: 12px 22px;
+    min-height: 28px;
+    border: 1px solid #d7dde5;
+    border-bottom: none;
+}
+
+QTabBar::tab:selected {
+    background: #ffffff;
+    color: #111827;
+    font-weight: 700;
+    border-bottom: 3px solid #155e75;
+}
+
+QGroupBox {
+    border: 1px solid #d7dde5;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding: 14px 10px 10px 10px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+}
+
+QLineEdit, QDoubleSpinBox, QComboBox, QTableWidget, QTextEdit {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    padding: 4px;
+    color: #111827;
+}
+
+QLineEdit[invalid="true"],
+QComboBox[invalid="true"] {
+    border: 1px solid #dc2626;
+    background: #fff7f7;
+}
+
+QLabel#validationMessage {
+    color: #b91c1c;
+    padding: 4px 0;
+}
+
+QLabel#dialogQuestionTitle {
+    color: #111827;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+QLabel#dialogQuestionDetails {
+    color: #4b5563;
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+QLabel#infoSection {
+    color: #334155;
+    background: #eef6f9;
+    border: 1px solid #c7e3ec;
+    border-radius: 6px;
+    padding: 12px 14px;
+}
+
+QWidget#segmentedControl QPushButton {
+    background: transparent;
+    color: #4b5563;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 6px 5px 8px 5px;
+    font-weight: 500;
+    min-width: 0;
+}
+
+QWidget#segmentedControl QPushButton:checked {
+    background: transparent;
+    color: #111827;
+    border-bottom: 2px solid #155e75;
+    font-weight: 700;
+}
+
+QCheckBox {
+    spacing: 5px;
+    background: transparent;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 1px solid #94a3b8;
+    border-radius: 3px;
+    background: #ffffff;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #155e75;
+}
+
+QCheckBox::indicator:checked {
+    background: #155e75;
+    border-color: #155e75;
+}
+
+QCheckBox::indicator:checked:hover {
+    background: #0e7490;
+    border-color: #0e7490;
+}
+
+QPushButton, QToolButton#calculateButton {
+    background: #155e75;
+    color: #ffffff;
+    border: 1px solid #155e75;
+    border-radius: 4px;
+    padding: 7px 14px;
+    font-weight: 600;
+}
+
+QPushButton:hover, QToolButton#calculateButton:hover {
+    background: #0e7490;
+}
+
+QPushButton:disabled, QToolButton#calculateButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QPushButton#primaryActionButton {
+    background: #155e75;
+    border-color: #155e75;
+    color: #ffffff;
+}
+
+QPushButton#primaryActionButton:hover {
+    background: #0e7490;
+}
+
+QPushButton#primaryActionButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QPushButton#secondaryActionButton {
+    background: #475569;
+    border-color: #475569;
+    color: #ffffff;
+}
+
+QPushButton#secondaryActionButton:hover {
+    background: #334155;
+}
+
+QPushButton#secondaryActionButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QPushButton#dangerActionButton {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #ffffff;
+}
+
+QPushButton#dangerActionButton:hover {
+    background: #b91c1c;
+}
+
+QPushButton#dangerActionButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QMenu {
+    padding: 6px 0;
+}
+
+QMenu::item {
+    padding: 8px 22px;
+}
+
+QMenu::item:selected {
+    background: #e6f3f7;
+    color: #111827;
+}
+
+QHeaderView::section {
+    background: #eef2f7;
+    color: #1f2937;
+    border: 1px solid #d7dde5;
+    padding: 5px;
+    font-weight: 600;
+}
+
+QToolButton#stageHeaderButton {
+    background: #155e75;
+    color: #ffffff;
+    border: 1px solid #155e75;
+    border-radius: 3px;
+    padding: 0;
+    font-weight: 700;
+}
+
+QToolButton#stageHeaderButton:hover {
+    background: #0e7490;
+}
+
+QStatusBar {
+    background: #ffffff;
+    color: #4b5563;
+}
