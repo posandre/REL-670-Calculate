@@ -100,7 +100,7 @@ QWidget#segmentedControl QPushButton:checked {
 }
 
 QCheckBox {
-    spacing: 0;
+    spacing: 5px;
     background: transparent;
 }
 
@@ -142,6 +142,55 @@ QPushButton:hover, QToolButton#calculateButton:hover {
 QPushButton:disabled, QToolButton#calculateButton:disabled {
     background: #9ca3af;
     border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QPushButton#primaryActionButton {
+    background: #155e75;
+    border-color: #155e75;
+    color: #ffffff;
+}
+
+QPushButton#primaryActionButton:hover {
+    background: #0e7490;
+}
+
+QPushButton#primaryActionButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QPushButton#secondaryActionButton {
+    background: #475569;
+    border-color: #475569;
+    color: #ffffff;
+}
+
+QPushButton#secondaryActionButton:hover {
+    background: #334155;
+}
+
+QPushButton#secondaryActionButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
+}
+
+QPushButton#dangerActionButton {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #ffffff;
+}
+
+QPushButton#dangerActionButton:hover {
+    background: #b91c1c;
+}
+
+QPushButton#dangerActionButton:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    color: #f3f4f6;
 }
 
 QMenu {

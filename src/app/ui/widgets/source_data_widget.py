@@ -27,7 +27,6 @@ from app.services.calculations.distance_stage_rules import (
     load_angle_deg,
 )
 
-
 LOCKED_BACKGROUND = QColor("#e5e7eb")
 EDITABLE_BACKGROUND = QColor("#ffffff")
 SENSITIVE_STAGE_BACKGROUND = QColor("#fff2b8")
@@ -64,13 +63,13 @@ class StageHeaderView(QHeaderView):
         self.sectionResized.connect(lambda *_: self._position_buttons())
         self.sectionMoved.connect(lambda *_: self._position_buttons())
 
-    def mouseMoveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802  # type: ignore[no-untyped-def]
         super().mouseMoveEvent(event)
         section = self.logicalIndexAt(event.position().toPoint())
         self._active_section = section if section > 0 else -1
         self._position_buttons()
 
-    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+    def leaveEvent(self, event) -> None:  # noqa: N802  # type: ignore[no-untyped-def]
         super().leaveEvent(event)
         self._active_section = -1
         self._position_buttons()
@@ -130,6 +129,7 @@ class SourceDataWidget(QWidget):
         self.ktn_secondary = QLineEdit()
         self.sensitivity_factor = QLineEdit("1,10")
         self.phs_sensitivity_factor = QLineEdit("1,20")
+        self.max_psd_time = QLineEdit("2,5")
         self.delta_phi = QLineEdit("4")
         self.rejection_factor = QLineEdit("0,85")
         self.delta_r_fw_rv = QLineEdit()
@@ -202,6 +202,7 @@ class SourceDataWidget(QWidget):
             self.ktn_secondary,
             self.sensitivity_factor,
             self.phs_sensitivity_factor,
+            self.max_psd_time,
             self.delta_phi,
             self.rejection_factor,
             self.delta_r_fw_rv,
@@ -226,21 +227,26 @@ class SourceDataWidget(QWidget):
         layout.addWidget(self.ktn_secondary_unit, 4, 5)
         self.phs_sensitivity_factor_label = QLabel()
         self.phs_sensitivity_factor_unit = QLabel()
+        self.max_psd_time_label = QLabel()
+        self.max_psd_time_unit = QLabel()
         layout.addWidget(self.sensitivity_factor_label, 5, 0)
         layout.addWidget(self.sensitivity_factor, 5, 1, 1, 4)
         layout.addWidget(self.sensitivity_factor_unit, 5, 5)
         layout.addWidget(self.phs_sensitivity_factor_label, 6, 0)
         layout.addWidget(self.phs_sensitivity_factor, 6, 1, 1, 4)
         layout.addWidget(self.phs_sensitivity_factor_unit, 6, 5)
-        layout.addWidget(self.delta_phi_label, 7, 0)
-        layout.addWidget(self.delta_phi, 7, 1, 1, 4)
-        layout.addWidget(self.delta_phi_unit, 7, 5)
-        layout.addWidget(self.rejection_factor_label, 8, 0)
-        layout.addWidget(self.rejection_factor, 8, 1, 1, 4)
-        layout.addWidget(self.rejection_factor_unit, 8, 5)
-        layout.addWidget(self.delta_r_fw_rv_label, 9, 0)
-        layout.addWidget(self.delta_r_fw_rv, 9, 1, 1, 4)
-        layout.addWidget(self.delta_r_fw_rv_unit, 9, 5)
+        layout.addWidget(self.max_psd_time_label, 7, 0)
+        layout.addWidget(self.max_psd_time, 7, 1, 1, 4)
+        layout.addWidget(self.max_psd_time_unit, 7, 5)
+        layout.addWidget(self.delta_phi_label, 8, 0)
+        layout.addWidget(self.delta_phi, 8, 1, 1, 4)
+        layout.addWidget(self.delta_phi_unit, 8, 5)
+        layout.addWidget(self.rejection_factor_label, 9, 0)
+        layout.addWidget(self.rejection_factor, 9, 1, 1, 4)
+        layout.addWidget(self.rejection_factor_unit, 9, 5)
+        layout.addWidget(self.delta_r_fw_rv_label, 10, 0)
+        layout.addWidget(self.delta_r_fw_rv, 10, 1, 1, 4)
+        layout.addWidget(self.delta_r_fw_rv_unit, 10, 5)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(4, 1)
         return self.engineering_settings_group
@@ -291,11 +297,13 @@ class SourceDataWidget(QWidget):
         self.ktn_secondary_unit.setText(t("unit.volt"))
         self.sensitivity_factor_label.setText(t("source.sensitivity_factor_psd"))
         self.phs_sensitivity_factor_label.setText(t("source.sensitivity_factor_phs"))
+        self.max_psd_time_label.setText(t("source.max_psd_time"))
         self.delta_phi_label.setText(t("source.delta_phi"))
         self.rejection_factor_label.setText(t("source.rejection_factor"))
         self.delta_r_fw_rv_label.setText(t("source.delta_r_fw_rv"))
         self.sensitivity_factor_unit.setText(t("unit.relative"))
         self.phs_sensitivity_factor_unit.setText(t("unit.relative"))
+        self.max_psd_time_unit.setText(t("unit.second"))
         self.delta_phi_unit.setText(t("unit.degree"))
         self.rejection_factor_unit.setText(t("unit.relative"))
         self.delta_r_fw_rv_unit.setText(t("unit.ohm"))
@@ -321,6 +329,7 @@ class SourceDataWidget(QWidget):
             editor.clear()
         self.sensitivity_factor.setText("1,10")
         self.phs_sensitivity_factor.setText("1,20")
+        self.max_psd_time.setText("2,5")
         self.delta_phi.setText("4")
         self.rejection_factor.setText("0,85")
         self._update_delta_r_fw_rv()
@@ -338,6 +347,7 @@ class SourceDataWidget(QWidget):
             self.ktn_secondary,
             self.sensitivity_factor,
             self.phs_sensitivity_factor,
+            self.max_psd_time,
             self.delta_phi,
             self.rejection_factor,
             self.settings_table,
@@ -353,6 +363,7 @@ class SourceDataWidget(QWidget):
             self.ktn_secondary,
             self.sensitivity_factor,
             self.phs_sensitivity_factor,
+            self.max_psd_time,
             self.delta_phi,
             self.rejection_factor,
         ):
@@ -386,6 +397,7 @@ class SourceDataWidget(QWidget):
             (self._translator.text("source.ktn_primary"), self.ktn_primary),
             (self._translator.text("source.ktn_secondary"), self.ktn_secondary),
             (self._translator.text("source.delta_phi"), self.delta_phi),
+            (self._translator.text("source.max_psd_time"), self.max_psd_time),
             (self._translator.text("source.rejection_factor"), self.rejection_factor),
             (self._translator.text("source.delta_r_fw_rv"), self.delta_r_fw_rv),
         ]
@@ -473,9 +485,8 @@ class SourceDataWidget(QWidget):
                         column,
                         self._translator.text("validation.required"),
                     )
-                    missing_cells.append(
-                        f"{self._translator.text('source.step_template', number=column)}: {row_name}"
-                    )
+                    step_name = self._translator.text("source.step_template", number=column)
+                    missing_cells.append(f"{step_name}: {row_name}")
         if missing_cells:
             errors.append(
                 self._translator.text("validation.missing_stage_values")
@@ -529,14 +540,15 @@ class SourceDataWidget(QWidget):
                 "delta_phi_deg": self.delta_phi.text(),
                 "rejection_factor": self.rejection_factor.text(),
                 "delta_r_fw_rv": self.delta_r_fw_rv.text(),
+                "max_psd_time_sec": self.max_psd_time.text(),
                 "sensitive_stage": self.sensitive_stage_combo.currentData() or 0,
             },
             "settings": self._settings_to_dict(),
             "load_modes": self._table_items_to_dict(self.load_table),
         }
 
-    def phase_phase_stage_inputs(self) -> list[dict[str, float | bool | str]]:
-        stages: list[dict[str, float | bool | str]] = []
+    def phase_phase_stage_inputs(self) -> list[dict[str, float | int | bool | str]]:
+        stages: list[dict[str, float | int | bool | str]] = []
         for column in range(1, self.settings_table.columnCount()):
             values = {
                 "x1": self._setting_number("X1", column),
@@ -550,6 +562,7 @@ class SourceDataWidget(QWidget):
             stages.append(
                 {
                     "name": self._translator.text("source.step_template", number=column),
+                    "column": column,
                     "is_forward": self._is_forward_stage(column),
                     "x1": float(values["x1"]),
                     "r1": float(values["r1"]),
@@ -560,8 +573,8 @@ class SourceDataWidget(QWidget):
             )
         return stages
 
-    def phase_ground_stage_inputs(self) -> list[dict[str, float | bool | str]]:
-        stages: list[dict[str, float | bool | str]] = []
+    def phase_ground_stage_inputs(self) -> list[dict[str, float | int | bool | str]]:
+        stages: list[dict[str, float | int | bool | str]] = []
         for column in range(1, self.settings_table.columnCount()):
             values = {
                 "x1": self._setting_number("X1", column),
@@ -578,6 +591,7 @@ class SourceDataWidget(QWidget):
             stages.append(
                 {
                     "name": self._translator.text("source.step_template", number=column),
+                    "column": column,
                     "is_forward": self._is_forward_stage(column),
                     "x1": float(values["x1"]),
                     "r1": float(values["r1"]),
@@ -641,6 +655,9 @@ class SourceDataWidget(QWidget):
 
     def phs_sensitivity_factor_value(self) -> float | None:
         return self._line_number(self.phs_sensitivity_factor)
+
+    def max_psd_time_value(self) -> float:
+        return self._line_number(self.max_psd_time) or 2.5
 
     def rejection_factor_value(self) -> float | None:
         return self._line_number(self.rejection_factor)
@@ -736,6 +753,9 @@ class SourceDataWidget(QWidget):
         engineering_settings = data.get("engineering_settings", {})
         if isinstance(engineering_settings, dict):
             self.delta_phi.setText(str(engineering_settings.get("delta_phi_deg", "4")))
+            self.max_psd_time.setText(
+                str(engineering_settings.get("max_psd_time_sec", "2,5"))
+            )
             self.rejection_factor.setText(
                 str(engineering_settings.get("rejection_factor", "0,85"))
             )
@@ -938,6 +958,13 @@ class SourceDataWidget(QWidget):
             return float(text)
         except ValueError:
             return None
+
+    def set_setting_number(self, row_name: str, column: int, value: float) -> None:
+        if row_name not in self._settings_rows:
+            return
+        if column <= 0 or column >= self.settings_table.columnCount():
+            return
+        self._set_setting_text(row_name, column, self._format_number(value))
 
     def _stage_time_seconds(self, column: int) -> float | None:
         times = [

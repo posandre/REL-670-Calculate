@@ -5,15 +5,17 @@ from __future__ import annotations
 import sys
 from base64 import b64encode
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from io import BytesIO
+from itertools import pairwise
 from math import atan, ceil, cos, pi, sin, sqrt, tan
 from pathlib import Path
 from shutil import copy2
-from typing import cast
+from typing import Any, cast
 
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
-from PySide6.QtCore import QStandardPaths, Qt
+from PySide6.QtCore import QEvent, QObject, QStandardPaths, Qt
 from PySide6.QtGui import QFontMetrics, QIcon, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -88,8 +91,22 @@ from app.utils.serialization import to_json
 OverlayPoint = tuple[str, float, float]
 OverlayPolygon = tuple[str, tuple[OverlayPoint, ...]]
 FormulaPoint = tuple[str, str, str, float, str, str, float]
-StageValue = float | bool | str | None
+StageValue = float | int | bool | str | None
 StageMapping = Mapping[str, StageValue]
+
+
+@dataclass(frozen=True)
+class DistanceDragTarget:
+    graph_kind: str
+    zone_name: str
+    column: int
+    row_name: str
+    x_value: float
+    y_min: float
+    y_max: float
+    segments: tuple[tuple[tuple[float, float], tuple[float, float]], ...]
+    line: object
+    zone_line: object
 
 
 class MainWindow(QMainWindow):
@@ -109,19 +126,38 @@ class MainWindow(QMainWindow):
         self._psd_phase_ground_point_targets: list[tuple[str, float, float]] = []
         self._distance_phase_phase_pick_cid: int | None = None
         self._distance_phase_phase_motion_cid: int | None = None
+        self._distance_phase_phase_press_cid: int | None = None
+        self._distance_phase_phase_release_cid: int | None = None
         self._distance_phase_phase_zone_visibility: dict[str, bool] = {}
         self._distance_phase_phase_point_targets: list[tuple[str, float, float]] = []
+        self._distance_phase_phase_drag_targets: list[DistanceDragTarget] = []
         self._distance_phase_ground_pick_cid: int | None = None
         self._distance_phase_ground_motion_cid: int | None = None
+        self._distance_phase_ground_press_cid: int | None = None
+        self._distance_phase_ground_release_cid: int | None = None
         self._distance_phase_ground_zone_visibility: dict[str, bool] = {}
         self._distance_phase_ground_point_targets: list[tuple[str, float, float]] = []
+        self._distance_phase_ground_drag_targets: list[DistanceDragTarget] = []
+        self._distance_drag_overrides: dict[tuple[str, int], float] = {}
+        self._distance_drag_original_values: dict[tuple[str, int], float] = {}
+        self._distance_drag_active: DistanceDragTarget | None = None
+        self._distance_drag_hover: DistanceDragTarget | None = None
+        self._distance_drag_limits: tuple[tuple[float, float], tuple[float, float]] | None = None
+        self._distance_drag_pending = False
         self._phs_zone_visibility: dict[str, bool] = {}
         self._phs_pick_cids: dict[int, int] = {}
         self._last_psb_blocking_result: PsbBlockingResult | None = None
         self._last_phs_result: PhsSelectorResult | None = None
         self._show_point_labels = False
+        self._show_legends = True
+        self._show_zone_names = True
+        self._show_point_tooltips = True
+        self._show_journal_tab = True
         self._zone_colors = self._default_zone_colors()
         self._results_locked = False
+        self._dirty = False
+        self._suppress_dirty = False
+        self._locked_input_warning_open = False
         self._psd_calculated = False
         self._phs_calculated = False
         self._input_tab_index = 0
@@ -138,6 +174,9 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_ui()
         self._load_example_data()
+        self._connect_dirty_tracking()
+        self._install_locked_input_warning_filter()
+        self._dirty = False
         self._retranslate()
         self._apply_pointer_cursors()
         self._update_result_tab_state()
@@ -165,7 +204,6 @@ class MainWindow(QMainWindow):
         self.save_action = self.file_menu.addAction("")
         self.save_as_action = self.file_menu.addAction("")
         self.open_action = self.file_menu.addAction("")
-        self.export_action = self.file_menu.addAction("")
         self.file_menu.addSeparator()
         self.exit_action = self.file_menu.addAction("")
 
@@ -176,7 +214,6 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self._save_project_as)
         self.new_action.triggered.connect(self._new_project)
         self.open_action.triggered.connect(self._open_latest_project)
-        self.export_action.triggered.connect(self._export_rx_diagram)
         self.exit_action.triggered.connect(self.close)
         self.settings_action.triggered.connect(self._open_settings)
         self.help_action.triggered.connect(self._open_help)
@@ -198,6 +235,7 @@ class MainWindow(QMainWindow):
         )
         self.calculate_button.clicked.connect(self._calculate_all)
         self.clear_results_button = QPushButton()
+        self.clear_results_button.setObjectName("dangerActionButton")
         self.clear_results_button.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
@@ -363,8 +401,9 @@ class MainWindow(QMainWindow):
             return
         if index == self._distance_tab_index:
             self._update_distance_phase_ground_tab()
-            stack = getattr(self.distance_tabs, "_rel_psd_stack", None)
-            if isinstance(stack, QStackedWidget):
+            stack_obj = getattr(self.distance_tabs, "_rel_psd_stack", None)
+            if isinstance(stack_obj, QStackedWidget):
+                stack = cast(QStackedWidget, stack_obj)
                 current = stack.currentWidget()
                 if current is self.distance_phase_ground_tab:
                     self._plot_distance_phase_ground_zones()
@@ -601,6 +640,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(self.distance_phase_phase_panel)
+        self._build_distance_drag_actions("phase_phase")
         layout.addWidget(self.distance_phase_phase_panel)
         return page
 
@@ -608,8 +648,34 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         self._route_panel_coordinates_to_status(self.distance_phase_ground_panel)
+        self._build_distance_drag_actions("phase_ground")
         layout.addWidget(self.distance_phase_ground_panel)
         return page
+
+    def _build_distance_drag_actions(self, graph_kind: str) -> None:
+        cancel_button = QPushButton()
+        apply_button = QPushButton()
+        cancel_button.setObjectName("secondaryActionButton")
+        apply_button.setObjectName("primaryActionButton")
+        cancel_button.setEnabled(False)
+        apply_button.setEnabled(False)
+        cancel_button.clicked.connect(self._cancel_distance_drag_changes)
+        apply_button.clicked.connect(self._apply_distance_drag_changes)
+        toolbar = (
+            self.distance_phase_phase_panel.toolbar
+            if graph_kind == "phase_phase"
+            else self.distance_phase_ground_panel.toolbar
+        )
+        toolbar.addSeparator()
+        toolbar.addWidget(cancel_button)
+        toolbar.addSeparator()
+        toolbar.addWidget(apply_button)
+        if graph_kind == "phase_phase":
+            self.distance_phase_phase_drag_cancel_button = cancel_button
+            self.distance_phase_phase_drag_apply_button = apply_button
+        else:
+            self.distance_phase_ground_drag_cancel_button = cancel_button
+            self.distance_phase_ground_drag_apply_button = apply_button
 
     def _build_psd_settings_tab(self) -> QWidget:
         page = QWidget()
@@ -725,10 +791,11 @@ class MainWindow(QMainWindow):
         )
 
     def _set_segment_visible(self, module: QWidget, widget: QWidget, visible: bool) -> None:
-        stack = getattr(module, "_rel_psd_stack", None)
+        stack_obj = getattr(module, "_rel_psd_stack", None)
         buttons = getattr(module, "_rel_psd_buttons", [])
-        if not isinstance(stack, QStackedWidget):
+        if not isinstance(stack_obj, QStackedWidget):
             return
+        stack = cast(QStackedWidget, stack_obj)
         index = stack.indexOf(widget)
         if index < 0 or index >= len(buttons):
             return
@@ -745,9 +812,10 @@ class MainWindow(QMainWindow):
                     break
 
     def _on_psd_tab_changed(self, index: int) -> None:
-        stack = getattr(self.psd_tabs, "_rel_psd_stack", None)
-        if not isinstance(stack, QStackedWidget):
+        stack_obj = getattr(self.psd_tabs, "_rel_psd_stack", None)
+        if not isinstance(stack_obj, QStackedWidget):
             return
+        stack = cast(QStackedWidget, stack_obj)
         current = stack.widget(index)
         if current is self.psd_phase_phase_tab:
             self._plot_psd_phase_phase_zones()
@@ -755,9 +823,10 @@ class MainWindow(QMainWindow):
             self._plot_psd_phase_ground_zones()
 
     def _on_distance_tab_changed(self, index: int) -> None:
-        stack = getattr(self.distance_tabs, "_rel_psd_stack", None)
-        if not isinstance(stack, QStackedWidget):
+        stack_obj = getattr(self.distance_tabs, "_rel_psd_stack", None)
+        if not isinstance(stack_obj, QStackedWidget):
             return
+        stack = cast(QStackedWidget, stack_obj)
         current = stack.widget(index)
         if current is self.distance_phase_phase_tab:
             self._plot_distance_phase_phase_zones()
@@ -969,7 +1038,7 @@ class MainWindow(QMainWindow):
             if preview_label != "_nolegend_":
                 line_by_label[label] = line
         self._autoscale_visible(axis)
-        legend = axis.legend(loc="upper left") if line_by_label else None
+        legend = axis.legend(loc="upper left") if self._show_legends and line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
                 label = text.get_text()
@@ -1091,6 +1160,11 @@ class MainWindow(QMainWindow):
         return message.clickedButton() is yes_button
 
     def _clear_results(self, update_lock: bool = True) -> None:
+        self._distance_drag_overrides.clear()
+        self._distance_drag_original_values.clear()
+        self._distance_drag_active = None
+        self._distance_drag_limits = None
+        self._set_distance_drag_pending(False)
         self._last_result = None
         self._last_psb_blocking_result = None
         self._last_phs_result = None
@@ -1152,7 +1226,7 @@ class MainWindow(QMainWindow):
             self._distance_tab_index: self._psd_calculated,
             self._psd_tab_index: self._psd_calculated,
             self._phs_tab_index: self._phs_calculated,
-            self._journal_tab_index: True,
+            self._journal_tab_index: self._show_journal_tab,
         }
         for index in range(self.tabs.count()):
             visible = visible_by_index.get(index, False)
@@ -1161,6 +1235,66 @@ class MainWindow(QMainWindow):
         current_index = self.tabs.currentIndex()
         if not visible_by_index.get(current_index, False):
             self.tabs.setCurrentIndex(self._input_tab_index)
+
+    def _connect_dirty_tracking(self) -> None:
+        self.project_name.textChanged.connect(self._mark_dirty)
+        self.author.textChanged.connect(self._mark_dirty)
+        self.source_data_widget.protection_type_combo.currentIndexChanged.connect(self._mark_dirty)
+        self.source_data_widget.sensitive_stage_combo.currentIndexChanged.connect(self._mark_dirty)
+        for editor in (
+            self.source_data_widget.ktc_primary,
+            self.source_data_widget.ktc_secondary,
+            self.source_data_widget.ktn_primary,
+            self.source_data_widget.ktn_secondary,
+            self.source_data_widget.sensitivity_factor,
+            self.source_data_widget.phs_sensitivity_factor,
+            self.source_data_widget.max_psd_time,
+            self.source_data_widget.delta_phi,
+            self.source_data_widget.rejection_factor,
+        ):
+            editor.textChanged.connect(self._mark_dirty)
+        self.source_data_widget.settings_table.itemChanged.connect(self._mark_dirty)
+        self.source_data_widget.load_table.itemChanged.connect(self._mark_dirty)
+
+    def _install_locked_input_warning_filter(self) -> None:
+        for widget in self.source_data_widget.findChildren(QWidget):
+            widget.installEventFilter(self)
+
+    def _mark_dirty(self, *_args: object) -> None:
+        if not self._suppress_dirty:
+            self._dirty = True
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:  # noqa: N802
+        widget = cast(QWidget, obj) if isinstance(obj, QWidget) else None
+        if (
+            self._results_locked
+            and widget is not None
+            and not widget.isEnabled()
+            and event.type()
+            in {
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonDblClick,
+                QEvent.Type.KeyPress,
+            }
+        ):
+            self._show_locked_input_warning()
+            return True
+        if isinstance(obj, QObject):
+            return super().eventFilter(obj, event)
+        return False
+
+    def _show_locked_input_warning(self) -> None:
+        if self._locked_input_warning_open:
+            return
+        self._locked_input_warning_open = True
+        try:
+            QMessageBox.information(
+                self,
+                self._translator.text("message.results_locked_title"),
+                self._translator.text("message.results_locked_body"),
+            )
+        finally:
+            self._locked_input_warning_open = False
 
     def _redraw_psd_charts(self) -> None:
         self._plot_psd_phase_phase_zones()
@@ -1333,6 +1467,7 @@ class MainWindow(QMainWindow):
             stages,
             sensitivity_factor,
             self._load_cut_input(self.source_data_widget.load_cut_inputs()),
+            max_stage_time_sec=self.source_data_widget.max_psd_time_value(),
         )
 
     def _calculate_phs_selector_settings(self, *, use_psd_zone: bool) -> PhsSelectorResult | None:
@@ -1557,10 +1692,10 @@ class MainWindow(QMainWindow):
             (self.phs_load_cut_panel, "Виріз від навантаження", load_cut_points),
         ):
             axis = panel.axis
-            self._phs_zone_visibility.setdefault(label, True)
+            self._phs_zone_visibility.setdefault(self._phs_visibility_key(panel, label), True)
             point_targets: list[tuple[str, float, float]] = []
             line_by_label: dict[str, object] = {}
-            visible = self._phs_zone_visibility.get(label, True)
+            visible = self._phs_zone_visible(panel, label)
             if panel is self.phs_load_cut_panel and load_cut_segments:
                 color = self._zone_line_color(label)
                 for segment_index, segment in enumerate(load_cut_segments):
@@ -1623,22 +1758,29 @@ class MainWindow(QMainWindow):
                             fontsize=8,
                         )
             point_targets.extend(self._plot_sensitive_distance_zone_on_phs(panel, line_by_label))
-            self._plot_phs_ld_zones(axis, result, line_by_label)
+            self._plot_phs_ld_zones(panel, result, line_by_label)
             for ld_label, ld_points in self._phs_ld_overlays(result):
-                if self._phs_zone_visibility.get(ld_label, True):
+                if self._phs_zone_visible(panel, ld_label):
                     for point_label, x_value, y_value in ld_points:
                         point_targets.append((f"{ld_label} {point_label}", x_value, y_value))
             self._autoscale_visible(axis)
             self._shade_rld_regions(
                 axis,
                 self._phs_ld_overlays(result),
-                {"Ld Fw": True, "Ld Rv": True},
+                {
+                    ld_label: self._phs_zone_visible(panel, ld_label)
+                    for ld_label, _points in self._phs_ld_overlays(result)
+                },
             )
-            legend = axis.legend(loc="upper left") if line_by_label else None
+            legend = axis.legend(loc="upper left") if self._show_legends and line_by_label else None
             if legend is not None:
                 for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
                     legend_label = text.get_text()
-                    legend_visible = self._phs_zone_visibility.get(legend_label, True)
+                    legend_visible = self._legend_group_visible_for_phs(
+                        panel,
+                        legend_label,
+                        line_by_label,
+                    )
                     legend_line.set_picker(8)
                     text.set_picker(True)
                     legend_line.set_alpha(1.0 if legend_visible else 0.25)
@@ -1648,6 +1790,25 @@ class MainWindow(QMainWindow):
             self._connect_phs_legend_picker(panel, line_by_label)
             self._connect_phs_point_tooltip(panel, point_targets)
             panel.redraw()
+
+    @staticmethod
+    def _phs_visibility_key(panel: MatplotlibPanel, label: str) -> str:
+        return f"{id(panel)}:{label}"
+
+    def _phs_zone_visible(self, panel: MatplotlibPanel, label: str) -> bool:
+        return self._phs_zone_visibility.get(self._phs_visibility_key(panel, label), True)
+
+    def _set_phs_zone_visible(self, panel: MatplotlibPanel, label: str, visible: bool) -> None:
+        self._phs_zone_visibility[self._phs_visibility_key(panel, label)] = visible
+
+    def _legend_group_visible_for_phs(
+        self,
+        panel: MatplotlibPanel,
+        label: str,
+        line_by_label: Mapping[str, object],
+    ) -> bool:
+        members = self._legend_group_members(label, line_by_label)
+        return any(self._phs_zone_visible(panel, member) for member in members)
 
     @staticmethod
     def _phs_three_phase_point(re_value: float, im_value: float) -> tuple[float, float]:
@@ -1696,10 +1857,14 @@ class MainWindow(QMainWindow):
 
         def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
             label = getattr(event.artist, "_rel_phs_zone_label", None)
-            if label not in line_by_label:
+            if not isinstance(label, str):
                 return
-            current = self._phs_zone_visibility.get(label, True)
-            self._phs_zone_visibility[label] = not current
+            members = self._legend_group_members(label, line_by_label)
+            if not members:
+                return
+            current = any(self._phs_zone_visible(panel, member) for member in members)
+            for member in members:
+                self._set_phs_zone_visible(panel, member, not current)
             self._plot_phs_graphs()
 
         self._phs_pick_cids[panel_key] = panel.canvas.mpl_connect("pick_event", toggle_zone)
@@ -1772,12 +1937,13 @@ class MainWindow(QMainWindow):
 
     def _plot_phs_ld_zones(
         self,
-        axis,
+        panel: MatplotlibPanel,
         result: PhsSelectorResult,
         line_by_label: dict[str, object],
     ) -> None:  # type: ignore[no-untyped-def]
+        axis = panel.axis
         for label, points in self._phs_ld_overlays(result):
-            self._phs_zone_visibility.setdefault(label, True)
+            self._phs_zone_visibility.setdefault(self._phs_visibility_key(panel, label), True)
             xs = [point[1] for point in points]
             ys = [point[2] for point in points]
             line = axis.plot(
@@ -1785,10 +1951,15 @@ class MainWindow(QMainWindow):
                 ys,
                 linewidth=1.0,
                 color=self._zone_line_color(label),
-                label=label,
+                label=self._legend_label_for_group(
+                    label,
+                    {self._legend_group_label(key) for key in line_by_label},
+                ),
             )[0]
-            visible = self._phs_zone_visibility.get(label, True)
+            visible = self._phs_zone_visible(panel, label)
             line.set_visible(visible)
+            scatter = axis.scatter(xs, ys, s=14, color=self._zone_line_color(label), zorder=4)
+            scatter.set_visible(visible)
             line_by_label[label] = line
 
     def _plot_sensitive_distance_zone_on_phs(
@@ -1797,7 +1968,7 @@ class MainWindow(QMainWindow):
         line_by_label: dict[str, object],
     ) -> list[tuple[str, float, float]]:
         label = "Чутлива зона"
-        self._phs_zone_visibility.setdefault(label, True)
+        self._phs_zone_visibility.setdefault(self._phs_visibility_key(panel, label), True)
         stage = self._selected_sensitive_stage()
         if stage is None:
             return []
@@ -1825,7 +1996,7 @@ class MainWindow(QMainWindow):
             color=color,
             label=label,
         )[0]
-        visible = self._phs_zone_visibility.get(label, True)
+        visible = self._phs_zone_visible(panel, label)
         line.set_visible(visible)
         panel.axis.fill(
             xs,
@@ -2104,12 +2275,9 @@ class MainWindow(QMainWindow):
             "PSD": "#7c3aed",
             "RLD inner": "#0e7490",
             "RLD outer": "#0369a1",
-            "Ld Fw": "#f59e0b",
-            "Ld Rv": "#f59e0b",
-            "Zнав Fw": "#92400e",
-            "Zнав Rv": "#db2777",
+            "Виріз від навантаження": "#f59e0b",
+            "Zнав": "#92400e",
             "PHS": "#2563eb",
-            "Виріз від навантаження": "#7c3aed",
         }
 
     def _zone_color_options(self) -> list[tuple[str, str]]:
@@ -2122,20 +2290,19 @@ class MainWindow(QMainWindow):
             ("PSD", "PSD: зона"),
             ("RLD inner", "RLD: внутрішня межа"),
             ("RLD outer", "RLD: зовнішня межа"),
-            ("Ld Fw", "LD: прямий напрямок"),
-            ("Ld Rv", "LD: зворотний напрямок"),
-            ("Zнав Fw", "Опір навантаження: прямий напрямок"),
-            ("Zнав Rv", "Опір навантаження: зворотний напрямок"),
+            ("Виріз від навантаження", "Виріз від навантаження"),
+            ("Zнав", "Опір навантаження"),
             ("PHS", "PHS: зона"),
-            ("Виріз від навантаження", "PHS: виріз від навантаження"),
         ]
 
     def _zone_line_style(self, label: str) -> str:
         return "--" if label.startswith("RLD inner") else "-"
 
     def _zone_line_color(self, label: str) -> str | None:
-        if label.startswith("Ld "):
-            return self._zone_colors.get("Ld Fw")
+        if label.startswith("Ld ") or label == "Виріз від навантаження":
+            return self._zone_colors.get("Виріз від навантаження")
+        if label.startswith("Zнав "):
+            return self._zone_colors.get("Zнав")
         if label.startswith("PSD "):
             return self._zone_colors.get("PSD")
         if label.startswith("PHS "):
@@ -2152,10 +2319,39 @@ class MainWindow(QMainWindow):
         return None
 
     def _legend_label_for_group(self, label: str, plotted_labels: set[str]) -> str:
-        if label in plotted_labels:
+        display_label = self._legend_group_label(label)
+        if display_label in plotted_labels:
             return "_nolegend_"
-        plotted_labels.add(label)
+        plotted_labels.add(display_label)
+        return display_label
+
+    def _legend_group_label(self, label: str) -> str:
+        if label.startswith("Ld ") or label == "Виріз від навантаження":
+            return "Виріз від навантаження"
+        if label.startswith("Zнав "):
+            return "Zнав"
         return label
+
+    @staticmethod
+    def _legend_group_members(label: str, line_by_label: Mapping[str, object]) -> list[str]:
+        if label == "Виріз від навантаження":
+            return [
+                key
+                for key in line_by_label
+                if key.startswith("Ld ") or key == "Виріз від навантаження"
+            ]
+        if label == "Zнав":
+            return [key for key in line_by_label if key.startswith("Zнав ")]
+        return [label] if label in line_by_label else []
+
+    def _legend_group_visible(
+        self,
+        label: str,
+        line_by_label: Mapping[str, object],
+        visibility: Mapping[str, bool],
+    ) -> bool:
+        members = self._legend_group_members(label, line_by_label)
+        return any(visibility.get(member, True) for member in members)
 
     def _plot_psd_phase_phase_zones(self) -> None:
         stages = [
@@ -2259,11 +2455,15 @@ class MainWindow(QMainWindow):
             self._psd_overlay_polygons(),
             self._psd_phase_phase_zone_visibility,
         )
-        legend = axis.legend(loc="upper left") if line_by_label else None
+        legend = axis.legend(loc="upper left") if self._show_legends and line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
                 label = text.get_text()
-                visible = self._psd_phase_phase_zone_visibility.get(label, True)
+                visible = self._legend_group_visible(
+                    label,
+                    line_by_label,
+                    self._psd_phase_phase_zone_visibility,
+                )
                 legend_line.set_picker(8)
                 text.set_picker(True)
                 legend_line.set_alpha(1.0 if visible else 0.25)
@@ -2375,11 +2575,15 @@ class MainWindow(QMainWindow):
             self._psd_overlay_polygons(),
             self._psd_phase_ground_zone_visibility,
         )
-        legend = axis.legend(loc="upper left") if line_by_label else None
+        legend = axis.legend(loc="upper left") if self._show_legends and line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
                 label = text.get_text()
-                visible = self._psd_phase_ground_zone_visibility.get(label, True)
+                visible = self._legend_group_visible(
+                    label,
+                    line_by_label,
+                    self._psd_phase_ground_zone_visibility,
+                )
                 legend_line.set_picker(8)
                 text.set_picker(True)
                 legend_line.set_alpha(1.0 if visible else 0.25)
@@ -2419,6 +2623,365 @@ class MainWindow(QMainWindow):
             float(result.arg_ld_load),
         )
 
+    def _stage_with_distance_override(
+        self,
+        stage: StageMapping,
+        graph_kind: str,
+    ) -> dict[str, StageValue]:
+        column = self._stage_column(stage)
+        key = (graph_kind, column)
+        if key not in self._distance_drag_overrides:
+            return dict(stage)
+        updated = dict(stage)
+        if graph_kind == "phase_phase":
+            updated["rpff"] = self._distance_drag_overrides[key]
+        else:
+            updated["rfpe"] = self._distance_drag_overrides[key]
+        return updated
+
+    @staticmethod
+    def _stage_column(stage: StageMapping) -> int:
+        value = stage.get("column")
+        return int(value) if isinstance(value, (float, int)) else 0
+
+    def _distance_drag_key(self, target: DistanceDragTarget) -> tuple[str, int]:
+        return (target.graph_kind, target.column)
+
+    def _distance_drag_value_from_x(self, target: DistanceDragTarget, x_value: float) -> float:
+        if target.graph_kind == "phase_phase":
+            return abs(x_value) * 2.0
+        return abs(x_value)
+
+    def _distance_drag_actions_visible(self, visible: bool) -> None:
+        for name in (
+            "distance_phase_phase_drag_cancel_button",
+            "distance_phase_phase_drag_apply_button",
+            "distance_phase_ground_drag_cancel_button",
+            "distance_phase_ground_drag_apply_button",
+        ):
+            if hasattr(self, name):
+                getattr(self, name).setEnabled(visible)
+
+    def _set_distance_drag_pending(self, pending: bool) -> None:
+        self._distance_drag_pending = pending
+        self._distance_drag_actions_visible(pending)
+
+    def _register_distance_drag_target(
+        self,
+        graph_kind: str,
+        zone_name: str,
+        column: int,
+        row_name: str,
+        points: Sequence[tuple[float, float]],
+        axis: object,
+        zone_line: object,
+    ) -> None:
+        if column <= 0 or len(points) < 2:
+            return
+        x_value = max(point[0] for point in points)
+        closed_points = list(points)
+        if closed_points[0] != closed_points[-1]:
+            closed_points.append(closed_points[0])
+        right_segments = tuple(
+            (start, end)
+            for start, end in pairwise(closed_points)
+            if abs(max(start[0], end[0]) - x_value) < 1e-6
+        )
+        if not right_segments:
+            right_points = [point for point in points if abs(point[0] - x_value) < 1e-6]
+            y_values = tuple(point[1] for point in right_points) or tuple(
+                point[1] for point in points
+            )
+            right_segments = (((x_value, min(y_values)), (x_value, max(y_values))),)
+        y_values = tuple(point[1] for segment in right_segments for point in segment)
+        line_xs: list[float] = []
+        line_ys: list[float] = []
+        for start, end in right_segments:
+            line_xs.extend([start[0], end[0], float("nan")])
+            line_ys.extend([start[1], end[1], float("nan")])
+        line = axis.plot(  # type: ignore[attr-defined]
+            line_xs,
+            line_ys,
+            color=self._zone_line_color(zone_name) or "#334155",
+            linewidth=1.0,
+            alpha=0.0,
+            label="_nolegend_",
+            zorder=6,
+        )[0]
+        target = DistanceDragTarget(
+            graph_kind=graph_kind,
+            zone_name=zone_name,
+            column=column,
+            row_name=row_name,
+            x_value=x_value,
+            y_min=min(y_values),
+            y_max=max(y_values),
+            segments=right_segments,
+            line=line,
+            zone_line=zone_line,
+        )
+        if graph_kind == "phase_phase":
+            self._distance_phase_phase_drag_targets.append(target)
+        else:
+            self._distance_phase_ground_drag_targets.append(target)
+
+    def _highlight_distance_drag_target(self, target: DistanceDragTarget | None) -> None:
+        if self._distance_drag_hover is target:
+            return
+        if self._distance_drag_hover is not None:
+            line = self._distance_drag_hover.line
+            zone_line = self._distance_drag_hover.zone_line
+            line.set_linewidth(1.0)  # type: ignore[attr-defined]
+            line.set_alpha(0.0)  # type: ignore[attr-defined]
+            zone_line.set_linewidth(1.0)  # type: ignore[attr-defined]
+        self._distance_drag_hover = target
+        if target is not None:
+            target.line.set_linewidth(4.0)  # type: ignore[attr-defined]
+            target.line.set_alpha(0.0)  # type: ignore[attr-defined]
+            target.zone_line.set_linewidth(4.0)  # type: ignore[attr-defined]
+
+    def _find_distance_drag_target(
+        self,
+        graph_kind: str,
+        x_value: float | None,
+        y_value: float | None,
+    ) -> DistanceDragTarget | None:
+        if x_value is None or y_value is None:
+            return None
+        targets = (
+            self._distance_phase_phase_drag_targets
+            if graph_kind == "phase_phase"
+            else self._distance_phase_ground_drag_targets
+        )
+        axis = (
+            self.distance_phase_phase_panel.axis
+            if graph_kind == "phase_phase"
+            else self.distance_phase_ground_panel.axis
+        )
+        x_min, x_max = axis.get_xlim()
+        tolerance = max(abs(x_max - x_min) * 0.012, 0.5)
+        nearest: DistanceDragTarget | None = None
+        nearest_distance = tolerance
+        for target in targets:
+            if y_value < target.y_min - tolerance or y_value > target.y_max + tolerance:
+                continue
+            distance = min(
+                self._distance_to_segment((x_value, y_value), start, end)
+                for start, end in target.segments
+            )
+            if distance <= nearest_distance:
+                nearest = target
+                nearest_distance = distance
+        return nearest
+
+    @staticmethod
+    def _distance_to_segment(
+        point: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> float:
+        px, py = point
+        x1, y1 = start
+        x2, y2 = end
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0.0 and dy == 0.0:
+            return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        nearest_x = x1 + t * dx
+        nearest_y = y1 + t * dy
+        return ((px - nearest_x) ** 2 + (py - nearest_y) ** 2) ** 0.5
+
+    def _redraw_distance_graph(self, graph_kind: str) -> None:
+        axis = (
+            self.distance_phase_phase_panel.axis
+            if graph_kind == "phase_phase"
+            else self.distance_phase_ground_panel.axis
+        )
+        limits = self._distance_drag_limits or (axis.get_xlim(), axis.get_ylim())
+        if graph_kind == "phase_phase":
+            self._plot_distance_phase_phase_zones()
+        else:
+            self._plot_distance_phase_ground_zones()
+        axis = (
+            self.distance_phase_phase_panel.axis
+            if graph_kind == "phase_phase"
+            else self.distance_phase_ground_panel.axis
+        )
+        axis.set_xlim(*limits[0])
+        axis.set_ylim(*limits[1])
+        axis.figure.canvas.draw_idle()
+
+    @staticmethod
+    def _toolbar_interaction_active(panel: MatplotlibPanel) -> bool:
+        mode = str(panel.toolbar.mode).lower()
+        return "pan" in mode or "zoom" in mode
+
+    @staticmethod
+    def _toolbar_mode_cursor(panel: MatplotlibPanel) -> Qt.CursorShape:
+        mode = str(panel.toolbar.mode).lower()
+        if "pan" in mode:
+            return Qt.CursorShape.OpenHandCursor
+        if "zoom" in mode:
+            return Qt.CursorShape.CrossCursor
+        return Qt.CursorShape.ArrowCursor
+
+    def _connect_distance_drag_handlers(self, graph_kind: str) -> None:
+        panel = (
+            self.distance_phase_phase_panel
+            if graph_kind == "phase_phase"
+            else self.distance_phase_ground_panel
+        )
+        canvas = panel.canvas
+        cid_names = (
+            (
+                "_distance_phase_phase_motion_cid",
+                "_distance_phase_phase_press_cid",
+                "_distance_phase_phase_release_cid",
+            )
+            if graph_kind == "phase_phase"
+            else (
+                "_distance_phase_ground_motion_cid",
+                "_distance_phase_ground_press_cid",
+                "_distance_phase_ground_release_cid",
+            )
+        )
+        for cid_name in cid_names:
+            cid = getattr(self, cid_name)
+            if cid is not None:
+                canvas.mpl_disconnect(cid)
+        tooltip = panel.axis.annotate(
+            "",
+            xy=(0.0, 0.0),
+            xytext=(12, 12),
+            textcoords="offset points",
+            bbox={"boxstyle": "round,pad=0.35", "fc": "#ffffff", "ec": "#64748b"},
+            arrowprops={"arrowstyle": "->", "color": "#64748b"},
+        )
+        tooltip.set_visible(False)
+        point_targets = (
+            self._distance_phase_phase_point_targets
+            if graph_kind == "phase_phase"
+            else self._distance_phase_ground_point_targets
+        )
+
+        def show_nearest_point(event) -> bool:  # type: ignore[no-untyped-def]
+            if not self._show_point_tooltips or event.xdata is None or event.ydata is None:
+                if tooltip.get_visible():
+                    tooltip.set_visible(False)
+                    canvas.draw_idle()
+                return False
+            x_min, x_max = panel.axis.get_xlim()
+            y_min, y_max = panel.axis.get_ylim()
+            tolerance = max(abs(x_max - x_min), abs(y_max - y_min)) * 0.015
+            nearest = None
+            nearest_distance = tolerance
+            for label, x_value, y_value in point_targets:
+                distance = ((event.xdata - x_value) ** 2 + (event.ydata - y_value) ** 2) ** 0.5
+                if distance <= nearest_distance:
+                    nearest = (label, x_value, y_value)
+                    nearest_distance = distance
+            if nearest is None:
+                if tooltip.get_visible():
+                    tooltip.set_visible(False)
+                    canvas.draw_idle()
+                return False
+            label, x_value, y_value = nearest
+            cast(Any, tooltip).xy = (x_value, y_value)
+            tooltip.set_text(
+                f"{label}\nr={self._report_number(x_value)}; x={self._report_number(y_value)}"
+            )
+            tooltip.set_visible(True)
+            canvas.draw_idle()
+            return True
+
+        def motion(event) -> None:  # type: ignore[no-untyped-def]
+            if event.inaxes is not panel.axis:
+                self._highlight_distance_drag_target(None)
+                canvas.setCursor(self._toolbar_mode_cursor(panel))
+                if tooltip.get_visible():
+                    tooltip.set_visible(False)
+                    canvas.draw_idle()
+                return
+            if self._toolbar_interaction_active(panel):
+                self._highlight_distance_drag_target(None)
+                canvas.setCursor(self._toolbar_mode_cursor(panel))
+                return
+            if self._distance_drag_active is not None:
+                target = self._distance_drag_active
+                if event.xdata is None:
+                    return
+                key = self._distance_drag_key(target)
+                self._distance_drag_overrides[key] = self._distance_drag_value_from_x(
+                    target,
+                    float(event.xdata),
+                )
+                self._set_distance_drag_pending(True)
+                self._redraw_distance_graph(target.graph_kind)
+                return
+            target = self._find_distance_drag_target(graph_kind, event.xdata, event.ydata)
+            self._highlight_distance_drag_target(target)
+            canvas.setCursor(
+                Qt.CursorShape.SizeHorCursor if target is not None else Qt.CursorShape.ArrowCursor
+            )
+            if target is None:
+                show_nearest_point(event)
+            elif tooltip.get_visible():
+                tooltip.set_visible(False)
+            panel.redraw()
+
+        def press(event) -> None:  # type: ignore[no-untyped-def]
+            if event.inaxes is not panel.axis or event.button != 1:
+                return
+            if self._toolbar_interaction_active(panel):
+                return
+            target = self._find_distance_drag_target(graph_kind, event.xdata, event.ydata)
+            if target is None:
+                return
+            self._distance_drag_active = target
+            key = self._distance_drag_key(target)
+            self._distance_drag_original_values.setdefault(
+                key,
+                self._distance_drag_value_from_x(target, target.x_value),
+            )
+            self._distance_drag_limits = (panel.axis.get_xlim(), panel.axis.get_ylim())
+            canvas.setCursor(Qt.CursorShape.SizeHorCursor)
+
+        def release(event) -> None:  # type: ignore[no-untyped-def]
+            if self._distance_drag_active is None:
+                return
+            self._distance_drag_active = None
+            self._distance_drag_limits = None
+            canvas.setCursor(self._toolbar_mode_cursor(panel))
+
+        setattr(self, cid_names[0], canvas.mpl_connect("motion_notify_event", motion))
+        setattr(self, cid_names[1], canvas.mpl_connect("button_press_event", press))
+        setattr(self, cid_names[2], canvas.mpl_connect("button_release_event", release))
+
+    def _cancel_distance_drag_changes(self) -> None:
+        self._distance_drag_overrides.clear()
+        self._distance_drag_original_values.clear()
+        self._distance_drag_active = None
+        self._distance_drag_limits = None
+        self._set_distance_drag_pending(False)
+        self._plot_distance_phase_phase_zones()
+        self._plot_distance_phase_ground_zones()
+
+    def _apply_distance_drag_changes(self) -> None:
+        if not self._distance_drag_overrides:
+            self._set_distance_drag_pending(False)
+            return
+        for (graph_kind, column), value in sorted(self._distance_drag_overrides.items()):
+            row_name = "RPFF" if graph_kind == "phase_phase" else "RFPE"
+            self.source_data_widget.set_setting_number(row_name, column, value)
+        self._distance_drag_overrides.clear()
+        self._distance_drag_original_values.clear()
+        self._distance_drag_active = None
+        self._set_distance_drag_pending(False)
+        self._clear_results(update_lock=True)
+        self._calculate_all()
+
     def _plot_distance_phase_phase_zones(self) -> None:
         if self._last_result is None:
             axis = self.distance_phase_phase_panel.axis
@@ -2426,10 +2989,11 @@ class MainWindow(QMainWindow):
             configure_rx_axes(axis, self._phase_phase_distance_labels())
             self.distance_phase_phase_panel.redraw()
             return
-        stages = [
-            self._phase_phase_stage_input(stage)
+        raw_stages = [
+            self._stage_with_distance_override(stage, "phase_phase")
             for stage in self.source_data_widget.phase_phase_stage_inputs()
         ]
+        stages = [self._phase_phase_stage_input(stage) for stage in raw_stages]
         zones = phase_phase_zone_polygons(stages)
         for zone in zones:
             self._distance_phase_phase_zone_visibility.setdefault(zone.name, True)
@@ -2438,7 +3002,8 @@ class MainWindow(QMainWindow):
         configure_rx_axes(axis, self._phase_phase_distance_labels())
         line_by_label = {}
         self._distance_phase_phase_point_targets = []
-        for zone in zones:
+        self._distance_phase_phase_drag_targets = []
+        for raw_stage, zone in zip(raw_stages, zones, strict=False):
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
             line = axis.plot(
@@ -2461,6 +3026,15 @@ class MainWindow(QMainWindow):
             fill.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
+                self._register_distance_drag_target(
+                    "phase_phase",
+                    zone.name,
+                    self._stage_column(raw_stage),
+                    "RPFF",
+                    zone.points,
+                    axis,
+                    line,
+                )
                 axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
@@ -2519,11 +3093,15 @@ class MainWindow(QMainWindow):
             self._distance_ld_overlays(),
             self._distance_phase_phase_zone_visibility,
         )
-        legend = axis.legend(loc="upper left") if line_by_label else None
+        legend = axis.legend(loc="upper left") if self._show_legends and line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
                 label = text.get_text()
-                visible = self._distance_phase_phase_zone_visibility.get(label, True)
+                visible = self._legend_group_visible(
+                    label,
+                    line_by_label,
+                    self._distance_phase_phase_zone_visibility,
+                )
                 legend_line.set_picker(8)
                 text.set_picker(True)
                 legend_line.set_alpha(1.0 if visible else 0.25)
@@ -2531,7 +3109,7 @@ class MainWindow(QMainWindow):
                 legend_line._rel_psd_zone_label = label  # type: ignore[attr-defined]
                 text._rel_psd_zone_label = label  # type: ignore[attr-defined]
         self._connect_distance_phase_phase_legend_picker(line_by_label)
-        self._connect_distance_phase_phase_point_tooltip()
+        self._connect_distance_drag_handlers("phase_phase")
         self.distance_phase_phase_panel.redraw()
 
     def _plot_distance_phase_ground_zones(self) -> None:
@@ -2541,10 +3119,11 @@ class MainWindow(QMainWindow):
             configure_rx_axes(axis, self._phase_ground_distance_labels())
             self.distance_phase_ground_panel.redraw()
             return
-        stages = [
-            self._phase_ground_stage_input(stage)
+        raw_stages = [
+            self._stage_with_distance_override(stage, "phase_ground")
             for stage in self.source_data_widget.phase_ground_stage_inputs()
         ]
+        stages = [self._phase_ground_stage_input(stage) for stage in raw_stages]
         zones = phase_ground_zone_polygons(stages)
         for zone in zones:
             self._distance_phase_ground_zone_visibility.setdefault(zone.name, True)
@@ -2553,7 +3132,8 @@ class MainWindow(QMainWindow):
         configure_rx_axes(axis, self._phase_ground_distance_labels())
         line_by_label = {}
         self._distance_phase_ground_point_targets = []
-        for zone in zones:
+        self._distance_phase_ground_drag_targets = []
+        for raw_stage, zone in zip(raw_stages, zones, strict=False):
             xs = [point[0] for point in zone.points]
             ys = [point[1] for point in zone.points]
             line = axis.plot(
@@ -2576,6 +3156,15 @@ class MainWindow(QMainWindow):
             fill.set_visible(visible)
             line_by_label[zone.name] = line
             if visible:
+                self._register_distance_drag_target(
+                    "phase_ground",
+                    zone.name,
+                    self._stage_column(raw_stage),
+                    "RFPE",
+                    zone.points,
+                    axis,
+                    line,
+                )
                 axis.scatter(xs, ys, s=10, zorder=4, label="_nolegend_")
                 for point_label, x_value, y_value in zip(
                     self._point_labels_for_count(len(zone.points)),
@@ -2642,11 +3231,15 @@ class MainWindow(QMainWindow):
             self._distance_ld_overlays(),
             self._distance_phase_ground_zone_visibility,
         )
-        legend = axis.legend(loc="upper left") if line_by_label else None
+        legend = axis.legend(loc="upper left") if self._show_legends and line_by_label else None
         if legend is not None:
             for legend_line, text in zip(legend.get_lines(), legend.get_texts(), strict=False):
                 label = text.get_text()
-                visible = self._distance_phase_ground_zone_visibility.get(label, True)
+                visible = self._legend_group_visible(
+                    label,
+                    line_by_label,
+                    self._distance_phase_ground_zone_visibility,
+                )
                 legend_line.set_picker(8)
                 text.set_picker(True)
                 legend_line.set_alpha(1.0 if visible else 0.25)
@@ -2654,7 +3247,7 @@ class MainWindow(QMainWindow):
                 legend_line._rel_psd_zone_label = label  # type: ignore[attr-defined]
                 text._rel_psd_zone_label = label  # type: ignore[attr-defined]
         self._connect_distance_phase_ground_legend_picker(line_by_label)
-        self._connect_distance_phase_ground_point_tooltip()
+        self._connect_distance_drag_handlers("phase_ground")
         self.distance_phase_ground_panel.redraw()
 
     def _connect_psd_phase_phase_legend_picker(self, line_by_label: dict[str, object]) -> None:
@@ -2664,10 +3257,14 @@ class MainWindow(QMainWindow):
 
         def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
             label = getattr(event.artist, "_rel_psd_zone_label", None)
-            if label not in line_by_label:
+            if not isinstance(label, str):
                 return
-            current = self._psd_phase_phase_zone_visibility.get(label, True)
-            self._psd_phase_phase_zone_visibility[label] = not current
+            members = self._legend_group_members(label, line_by_label)
+            if not members:
+                return
+            current = any(self._psd_phase_phase_zone_visibility.get(member, True) for member in members)
+            for member in members:
+                self._psd_phase_phase_zone_visibility[member] = not current
             self._plot_psd_phase_phase_zones()
 
         self._psd_phase_phase_pick_cid = canvas.mpl_connect("pick_event", toggle_zone)
@@ -2676,6 +3273,9 @@ class MainWindow(QMainWindow):
         canvas = self.psd_phase_phase_panel.canvas
         if self._psd_phase_phase_motion_cid is not None:
             canvas.mpl_disconnect(self._psd_phase_phase_motion_cid)
+        if not self._show_point_tooltips:
+            self._psd_phase_phase_motion_cid = None
+            return
         tooltip = self.psd_phase_phase_panel.axis.annotate(
             "",
             xy=(0.0, 0.0),
@@ -2710,9 +3310,9 @@ class MainWindow(QMainWindow):
                     canvas.draw_idle()
                 return
             label, x_value, y_value = nearest
-            tooltip.xy = (x_value, y_value)
+            cast(Any, tooltip).xy = (x_value, y_value)
             tooltip.set_text(
-                f"{label}\nx={self._report_number(x_value)}; y={self._report_number(y_value)}"
+                f"{label}\nr={self._report_number(x_value)}; x={self._report_number(y_value)}"
             )
             tooltip.set_visible(True)
             canvas.draw_idle()
@@ -2726,10 +3326,14 @@ class MainWindow(QMainWindow):
 
         def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
             label = getattr(event.artist, "_rel_psd_zone_label", None)
-            if label not in line_by_label:
+            if not isinstance(label, str):
                 return
-            current = self._psd_phase_ground_zone_visibility.get(label, True)
-            self._psd_phase_ground_zone_visibility[label] = not current
+            members = self._legend_group_members(label, line_by_label)
+            if not members:
+                return
+            current = any(self._psd_phase_ground_zone_visibility.get(member, True) for member in members)
+            for member in members:
+                self._psd_phase_ground_zone_visibility[member] = not current
             self._plot_psd_phase_ground_zones()
 
         self._psd_phase_ground_pick_cid = canvas.mpl_connect("pick_event", toggle_zone)
@@ -2738,6 +3342,9 @@ class MainWindow(QMainWindow):
         canvas = self.psd_phase_ground_panel.canvas
         if self._psd_phase_ground_motion_cid is not None:
             canvas.mpl_disconnect(self._psd_phase_ground_motion_cid)
+        if not self._show_point_tooltips:
+            self._psd_phase_ground_motion_cid = None
+            return
         tooltip = self.psd_phase_ground_panel.axis.annotate(
             "",
             xy=(0.0, 0.0),
@@ -2772,9 +3379,9 @@ class MainWindow(QMainWindow):
                     canvas.draw_idle()
                 return
             label, x_value, y_value = nearest
-            tooltip.xy = (x_value, y_value)
+            cast(Any, tooltip).xy = (x_value, y_value)
             tooltip.set_text(
-                f"{label}\nx={self._report_number(x_value)}; y={self._report_number(y_value)}"
+                f"{label}\nr={self._report_number(x_value)}; x={self._report_number(y_value)}"
             )
             tooltip.set_visible(True)
             canvas.draw_idle()
@@ -2791,10 +3398,17 @@ class MainWindow(QMainWindow):
 
         def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
             label = getattr(event.artist, "_rel_psd_zone_label", None)
-            if label not in line_by_label:
+            if not isinstance(label, str):
                 return
-            current = self._distance_phase_phase_zone_visibility.get(label, True)
-            self._distance_phase_phase_zone_visibility[label] = not current
+            members = self._legend_group_members(label, line_by_label)
+            if not members:
+                return
+            current = any(
+                self._distance_phase_phase_zone_visibility.get(member, True)
+                for member in members
+            )
+            for member in members:
+                self._distance_phase_phase_zone_visibility[member] = not current
             self._plot_distance_phase_phase_zones()
 
         self._distance_phase_phase_pick_cid = canvas.mpl_connect("pick_event", toggle_zone)
@@ -2809,10 +3423,17 @@ class MainWindow(QMainWindow):
 
         def toggle_zone(event) -> None:  # type: ignore[no-untyped-def]
             label = getattr(event.artist, "_rel_psd_zone_label", None)
-            if label not in line_by_label:
+            if not isinstance(label, str):
                 return
-            current = self._distance_phase_ground_zone_visibility.get(label, True)
-            self._distance_phase_ground_zone_visibility[label] = not current
+            members = self._legend_group_members(label, line_by_label)
+            if not members:
+                return
+            current = any(
+                self._distance_phase_ground_zone_visibility.get(member, True)
+                for member in members
+            )
+            for member in members:
+                self._distance_phase_ground_zone_visibility[member] = not current
             self._plot_distance_phase_ground_zones()
 
         self._distance_phase_ground_pick_cid = canvas.mpl_connect("pick_event", toggle_zone)
@@ -2840,6 +3461,8 @@ class MainWindow(QMainWindow):
         panel: MatplotlibPanel,
         targets: list[tuple[str, float, float]],
     ) -> int:
+        if not self._show_point_tooltips:
+            return 0
         canvas = panel.canvas
         axis = panel.axis
         tooltip = axis.annotate(
@@ -2876,9 +3499,9 @@ class MainWindow(QMainWindow):
                     canvas.draw_idle()
                 return
             label, x_value, y_value = nearest
-            tooltip.xy = (x_value, y_value)
+            cast(Any, tooltip).xy = (x_value, y_value)
             tooltip.set_text(
-                f"{label}\nx={self._report_number(x_value)}; y={self._report_number(y_value)}"
+                f"{label}\nr={self._report_number(x_value)}; x={self._report_number(y_value)}"
             )
             tooltip.set_visible(True)
             canvas.draw_idle()
@@ -2954,7 +3577,7 @@ class MainWindow(QMainWindow):
             group_colors[group_key] = self._zone_line_color(label) or "#16697a"
 
         dynamic_edge_fills: list[tuple[Polygon, tuple[OverlayPoint, ...], str]] = []
-        dynamic_hatch_fills: list[
+        dynamic_gap_fills: list[
             tuple[Polygon, tuple[OverlayPoint, ...], tuple[OverlayPoint, ...]]
         ] = []
         dynamic_extension_lines: list[tuple[Line2D, OverlayPoint, OverlayPoint]] = []
@@ -2988,19 +3611,18 @@ class MainWindow(QMainWindow):
             if outer is not None and inner is not None:
                 outer_path = self._points_top_to_bottom(outer)
                 inner_path = self._points_top_to_bottom(inner)
-                hatch = axis.fill(
+                gap_fill = axis.fill(
                     [point[1] for point in outer_path]
                     + [point[1] for point in reversed(inner_path)],
                     [point[2] for point in outer_path]
                     + [point[2] for point in reversed(inner_path)],
-                    facecolor="none",
-                    edgecolor=color,
-                    hatch="..",
+                    color=color,
+                    alpha=0.18,
                     linewidth=0,
                     label="_nolegend_",
                     zorder=0,
                 )[0]
-                dynamic_hatch_fills.append((hatch, outer, inner))
+                dynamic_gap_fills.append((gap_fill, outer, inner))
             for points, linestyle in ((outer, "-"), (inner, "--")):
                 if points is None or len(points) < 4:
                     continue
@@ -3031,7 +3653,7 @@ class MainWindow(QMainWindow):
                 xs = [point[1] for point in path] + [bottom_end[0], edge_x, edge_x, top_end[0]]
                 ys = [point[2] for point in path] + [bottom_end[1], bottom_end[1], top_end[1], top_end[1]]
                 fill.set_xy(list(zip(xs, ys, strict=False)))
-            for fill, outer, inner in dynamic_hatch_fills:
+            for fill, outer, inner in dynamic_gap_fills:
                 outer_top, outer_top_inner, outer_bottom, outer_bottom_inner = (
                     self._load_cut_boundary_segments(outer)
                 )
@@ -3081,15 +3703,14 @@ class MainWindow(QMainWindow):
         outer = next((points for label, points in overlays if label == "PSD outer"), None)
         if inner is None or outer is None:
             return
-        color = self._zone_line_color("RLD outer") or "#16697a"
+        color = self._zone_line_color("PSD outer") or "#16697a"
         xs = [point[1] for point in outer] + [point[1] for point in reversed(inner)]
         ys = [point[2] for point in outer] + [point[2] for point in reversed(inner)]
         axis.fill(
             xs,
             ys,
-            facecolor="none",
-            edgecolor=color,
-            hatch="..",
+            color=color,
+            alpha=0.18,
             linewidth=0,
             label="_nolegend_",
             zorder=0,
@@ -3308,6 +3929,7 @@ class MainWindow(QMainWindow):
             [self._translator.text("source.ktn_secondary"), widget.ktn_secondary.text(), "В"],
             [self._translator.text("source.sensitivity_factor_psd"), self._report_optional_number(result.sensitivity_factor), "в.о."],
             [self._translator.text("source.sensitivity_factor_phs"), widget.phs_sensitivity_factor.text(), "в.о."],
+            [self._translator.text("source.max_psd_time"), widget.max_psd_time.text(), "с"],
             [self._translator.text("source.delta_phi"), self._report_optional_number(load_cut.delta_phi_deg if load_cut else None), "град"],
             [self._translator.text("source.rejection_factor"), self._report_optional_number(load_cut.rejection_factor if load_cut else None), "в.о."],
             [self._translator.text("source.delta_r_fw_rv"), self._report_optional_number(load_cut.delta_r_secondary if load_cut else None), "Ом"],
@@ -5745,22 +6367,71 @@ class MainWindow(QMainWindow):
         return f"{label}=min({values})={self._report_optional_number(selected)}"
 
     def _save_project(self) -> None:
+        if self._current_project_id is None and not self._prompt_project_name():
+            return
         self._save_project_record(project_id=self._current_project_id)
 
     def _save_project_as(self) -> None:
+        if not self._prompt_project_name():
+            return
         self._save_project_record(project_id=None)
+
+    def _prompt_project_name(self) -> bool:
+        current_name = self.project_name.text().strip()
+        name, accepted = QInputDialog.getText(
+            self,
+            self._translator.text("dialog.project_name_title"),
+            self._translator.text("dialog.project_name_label"),
+            text=current_name,
+        )
+        if not accepted:
+            return False
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(
+                self,
+                self._translator.text("dialog.project_name_title"),
+                self._translator.text("message.project_name_required"),
+            )
+            return False
+        self.project_name.setText(name)
+        return True
 
     def _save_project_record(self, project_id: int | None) -> None:
         with self._session_factory() as session:
             repository = ProjectRepository(session)
+            name = self.project_name.text().strip()
+            existing = next(
+                (
+                    record
+                    for record in repository.list_projects()
+                    if record.name == name and record.id != project_id
+                ),
+                None,
+            )
+            if existing is not None:
+                answer = QMessageBox.question(
+                    self,
+                    self._translator.text("dialog.project_name_title"),
+                    self._translator.text("message.confirm_project_overwrite", name=name),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                project_id = existing.id
             self._current_project_id = repository.save(
                 self._project_data(),
                 results={"calculation": self._last_result},
                 project_id=project_id,
             )
+        self._dirty = False
         self.statusBar().showMessage(self._translator.text("message.saved"), 5000)
 
     def _new_project(self) -> None:
+        if not self._confirm_unsaved_changes():
+            return
+        self._suppress_dirty = True
         self._last_result = None
         self._last_psb_blocking_result = None
         self._current_project_id = None
@@ -5768,8 +6439,57 @@ class MainWindow(QMainWindow):
         self.author.clear()
         self.source_data_widget.reset()
         self._clear_results(update_lock=True)
+        self._dirty = False
+        self._suppress_dirty = False
+
+    def closeEvent(self, event) -> None:  # noqa: N802  # type: ignore[no-untyped-def]
+        if self._confirm_unsaved_changes():
+            event.accept()
+        else:
+            event.ignore()
+
+    def _confirm_unsaved_changes(self) -> bool:
+        if not self._dirty:
+            return True
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Question)
+        message.setWindowTitle(self._translator.text("message.unsaved_changes_title"))
+        message.setText(self._translator.text("message.unsaved_changes_body"))
+        save_button = cast(
+            QPushButton,
+            message.addButton(
+                self._translator.text("button.save"),
+                QMessageBox.ButtonRole.AcceptRole,
+            ),
+        )
+        discard_button = cast(
+            QPushButton,
+            message.addButton(
+                self._translator.text("button.discard"),
+                QMessageBox.ButtonRole.DestructiveRole,
+            ),
+        )
+        cancel_button = cast(
+            QPushButton,
+            message.addButton(
+                self._translator.text("button.cancel"),
+                QMessageBox.ButtonRole.RejectRole,
+            ),
+        )
+        save_button.setObjectName("primaryActionButton")
+        discard_button.setObjectName("dangerActionButton")
+        cancel_button.setObjectName("secondaryActionButton")
+        message.setDefaultButton(save_button)
+        message.exec()
+        clicked_button = message.clickedButton()
+        if clicked_button is save_button:
+            self._save_project()
+            return not self._dirty
+        return clicked_button is discard_button
 
     def _open_latest_project(self) -> None:
+        if not self._confirm_unsaved_changes():
+            return
         dialog = ProjectManagerDialog(
             self._translator,
             self._session_factory,
@@ -5786,6 +6506,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self._translator.text("message.loaded"), 5000)
 
     def _apply_project(self, project: ProjectData) -> None:
+        self._suppress_dirty = True
         self._translator.set_language(project.metadata.language)
         self.project_name.setText(project.metadata.name)
         self.author.setText(project.metadata.author)
@@ -5793,6 +6514,8 @@ class MainWindow(QMainWindow):
         self.source_data_widget.from_dict(project.source_data)
         self._update_psd_phase_ground_tab()
         self._clear_results(update_lock=True)
+        self._dirty = False
+        self._suppress_dirty = False
 
     def _export_rx_diagram(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -5968,6 +6691,10 @@ class MainWindow(QMainWindow):
             self._translator,
             self,
             show_point_labels=self._show_point_labels,
+            show_legends=self._show_legends,
+            show_zone_names=self._show_zone_names,
+            show_point_tooltips=self._show_point_tooltips,
+            show_journal_tab=self._show_journal_tab,
             zone_colors=self._zone_colors,
             zone_color_options=self._zone_color_options(),
         )
@@ -5983,6 +6710,10 @@ class MainWindow(QMainWindow):
                 )
                 self._translator.set_language(dialog.selected_language)
                 self._show_point_labels = dialog.show_point_labels
+                self._show_legends = dialog.show_legends
+                self._show_zone_names = dialog.show_zone_names
+                self._show_point_tooltips = dialog.show_point_tooltips
+                self._show_journal_tab = dialog.show_journal_tab
                 self._zone_colors = dialog.zone_colors
                 self._advance_progress(
                     progress,
@@ -5990,6 +6721,7 @@ class MainWindow(QMainWindow):
                     2,
                 )
                 self._retranslate()
+                self._update_result_tab_state()
                 self._advance_progress(
                     progress,
                     self._translator.text("progress.settings_graphs"),
@@ -6277,7 +7009,6 @@ class MainWindow(QMainWindow):
         self.save_action.setText(t("menu.save"))
         self.save_as_action.setText(t("menu.save_as"))
         self.open_action.setText(t("menu.open"))
-        self.export_action.setText(t("menu.export"))
         self.exit_action.setText(t("menu.exit"))
         self.settings_action.setText(t("menu.settings"))
         self.help_action.setText(t("menu.help"))
@@ -6300,6 +7031,18 @@ class MainWindow(QMainWindow):
         self.phs_report_search.setPlaceholderText(t("report.search_placeholder"))
         self.phs_report_find_prev_button.setText(t("button.find_previous"))
         self.phs_report_find_next_button.setText(t("button.find_next"))
+        for name in (
+            "distance_phase_phase_drag_cancel_button",
+            "distance_phase_ground_drag_cancel_button",
+        ):
+            if hasattr(self, name):
+                getattr(self, name).setText(t("button.cancel_changes"))
+        for name in (
+            "distance_phase_phase_drag_apply_button",
+            "distance_phase_ground_drag_apply_button",
+        ):
+            if hasattr(self, name):
+                getattr(self, name).setText(t("button.apply_changes"))
         self._update_psd_phase_ground_tab()
         self._retranslate_psd_tables()
         self.project_group.setTitle(t("group.project"))

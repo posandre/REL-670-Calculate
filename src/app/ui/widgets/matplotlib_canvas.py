@@ -6,6 +6,7 @@ from typing import ClassVar
 import matplotlib as mpl
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -66,6 +67,25 @@ class LocalizedNavigationToolbar(NavigationToolbar2QT):
                 action.setText(self._TEXT[text])
             if tooltip in self._TEXT:
                 action.setToolTip(self._TEXT[tooltip])
+
+    def _apply_mode_cursor(self) -> None:
+        mode = str(self.mode).lower()
+        if "pan" in mode:
+            self.canvas.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif "zoom" in mode:
+            self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def pan(self, *args):  # type: ignore[no-untyped-def]
+        result = super().pan(*args)
+        self._apply_mode_cursor()
+        return result
+
+    def zoom(self, *args):  # type: ignore[no-untyped-def]
+        result = super().zoom(*args)
+        self._apply_mode_cursor()
+        return result
 
     def configure_subplots(self):  # type: ignore[no-untyped-def]
         dialog = super().configure_subplots()

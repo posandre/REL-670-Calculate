@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
-    QLabel,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -30,6 +29,10 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
         *,
         show_point_labels: bool = True,
+        show_legends: bool = True,
+        show_zone_names: bool = True,
+        show_point_tooltips: bool = True,
+        show_journal_tab: bool = True,
         zone_colors: Mapping[str, str] | None = None,
         zone_color_options: Sequence[tuple[str, str]] | None = None,
     ) -> None:
@@ -44,18 +47,26 @@ class SettingsDialog(QDialog):
         self.language_combo.setCurrentText(translator.language)
         self.point_labels_checkbox = QCheckBox(translator.text("chart.show_point_labels"))
         self.point_labels_checkbox.setChecked(show_point_labels)
-
-        intro = QLabel(translator.text("settings.description"))
-        intro.setWordWrap(True)
-        intro.setObjectName("infoSection")
+        self.legends_checkbox = QCheckBox(translator.text("chart.show_legends"))
+        self.legends_checkbox.setChecked(show_legends)
+        self.zone_names_checkbox = QCheckBox(translator.text("chart.show_zone_names"))
+        self.zone_names_checkbox.setChecked(show_zone_names)
+        self.point_tooltips_checkbox = QCheckBox(translator.text("chart.show_point_tooltips"))
+        self.point_tooltips_checkbox.setChecked(show_point_tooltips)
+        self.journal_tab_checkbox = QCheckBox(translator.text("settings.show_journal_tab"))
+        self.journal_tab_checkbox.setChecked(show_journal_tab)
 
         language_group = QGroupBox(translator.text("settings.language_group"))
         language_form = QFormLayout(language_group)
         language_form.addRow(translator.text("label.language"), self.language_combo)
+        language_form.addRow("", self.journal_tab_checkbox)
 
         chart_group = QGroupBox(translator.text("settings.chart_group"))
         form = QFormLayout(chart_group)
         form.addRow("", self.point_labels_checkbox)
+        form.addRow("", self.legends_checkbox)
+        form.addRow("", self.zone_names_checkbox)
+        form.addRow("", self.point_tooltips_checkbox)
 
         color_group = QGroupBox(translator.text("settings.zone_colors_group"))
         color_form = QFormLayout(color_group)
@@ -96,15 +107,18 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(translator.text("button.ok"))
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(translator.text("button.cancel"))
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        ok_button.setText(translator.text("button.ok"))
+        cancel_button.setText(translator.text("button.cancel"))
+        ok_button.setObjectName("primaryActionButton")
+        cancel_button.setObjectName("secondaryActionButton")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         for button in buttons.buttons():
             button.setCursor(Qt.CursorShape.PointingHandCursor)  # type: ignore[name-defined]
 
         layout = QVBoxLayout(self)
-        layout.addWidget(intro)
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
 
@@ -149,6 +163,22 @@ class SettingsDialog(QDialog):
     @property
     def show_point_labels(self) -> bool:
         return self.point_labels_checkbox.isChecked()
+
+    @property
+    def show_legends(self) -> bool:
+        return self.legends_checkbox.isChecked()
+
+    @property
+    def show_zone_names(self) -> bool:
+        return self.zone_names_checkbox.isChecked()
+
+    @property
+    def show_point_tooltips(self) -> bool:
+        return self.point_tooltips_checkbox.isChecked()
+
+    @property
+    def show_journal_tab(self) -> bool:
+        return self.journal_tab_checkbox.isChecked()
 
     @property
     def zone_colors(self) -> dict[str, str]:

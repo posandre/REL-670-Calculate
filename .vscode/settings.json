@@ -1,6 +1,10 @@
 {
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.defaultInterpreterPath": "C:/Users/andriipostoliuk/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe",
     "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src",
+        "C:/Users/andriipostoliuk/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/Lib/site-packages"
+    ],
 
     "editor.formatOnSave": true,
     "files.trimTrailingWhitespace": true,

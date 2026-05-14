@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import atan, ceil, degrees, pi, tan
 
-MAX_BLOCKING_STAGE_TIME_SEC = 2.5
+DEFAULT_MAX_BLOCKING_STAGE_TIME_SEC = 2.5
 
 
 @dataclass(frozen=True)
@@ -108,12 +108,14 @@ def psb_blocking_settings(
     stages: list[PsbStageSettingInput],
     sensitivity_factor: float,
     load_cut: PsbLoadCutInput | None = None,
+    *,
+    max_stage_time_sec: float = DEFAULT_MAX_BLOCKING_STAGE_TIME_SEC,
 ) -> PsbBlockingResult:
     """Calculate PSD blocking settings. TODO: verify formulas by RET670 docs."""
     included_stages = [
         stage
         for stage in stages
-        if stage.time_sec is not None and stage.time_sec <= MAX_BLOCKING_STAGE_TIME_SEC
+        if stage.time_sec is not None and stage.time_sec <= max_stage_time_sec
     ]
     forward_stages = [stage for stage in included_stages if stage.is_forward]
     reverse_stages = [stage for stage in included_stages if not stage.is_forward]
