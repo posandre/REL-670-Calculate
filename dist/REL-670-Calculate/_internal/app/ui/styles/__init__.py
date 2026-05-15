@@ -1,1 +1,0 @@
-"""Centralized UI styling."""

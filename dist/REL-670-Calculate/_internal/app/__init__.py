@@ -1,2 +1,0 @@
-"""REL-PSD application package."""
-

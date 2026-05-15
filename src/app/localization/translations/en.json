@@ -64,6 +64,7 @@
   "unit.degree": "deg",
   "unit.ohm": "ohm",
   "unit.volt": "V",
+  "unit.kilovolt": "kV",
   "unit.ampere": "A",
   "unit.second": "s",
   "source.blocked_steps": "Blocked stages",

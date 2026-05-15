@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from math import cos, radians, sin, sqrt
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QRegularExpression, QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QColor, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QStyledItemDelegate,
 )
 
 from app.localization.translator import Translator
@@ -108,6 +109,18 @@ class StageHeaderView(QHeaderView):
             self.remove_requested.emit(self._active_section)
 
 
+class NumericItemDelegate(QStyledItemDelegate):
+    def __init__(self, validator: QRegularExpressionValidator, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._validator = validator
+
+    def createEditor(self, parent, option, index):  # type: ignore[no-untyped-def]
+        editor = QLineEdit(parent)
+        editor.setValidator(self._validator)
+        editor.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        return editor
+
+
 class SourceDataWidget(QWidget):
     def __init__(self, translator: Translator, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -121,12 +134,18 @@ class SourceDataWidget(QWidget):
         self.retranslate()
 
     def _build_ui(self) -> None:
+        self._numeric_validator = QRegularExpressionValidator(
+            QRegularExpression(r"^-?\d*(?:[.,]\d*)?$"),
+            self,
+        )
         self.protection_type_combo = QComboBox()
         self.sensitive_stage_combo = QComboBox()
         self.ktc_primary = QLineEdit()
-        self.ktc_secondary = QLineEdit()
+        self.ktc_secondary = QComboBox()
+        self.ktc_secondary.addItems(["1", "5"])
         self.ktn_primary = QLineEdit()
-        self.ktn_secondary = QLineEdit()
+        self.ktn_secondary = QLineEdit("0,1")
+        self.ktn_secondary.setReadOnly(True)
         self.sensitivity_factor = QLineEdit("1,10")
         self.phs_sensitivity_factor = QLineEdit("1,20")
         self.max_psd_time = QLineEdit("2,5")
@@ -145,6 +164,7 @@ class SourceDataWidget(QWidget):
         self.settings_header.add_requested.connect(self._add_stage_after)
         self.settings_header.remove_requested.connect(self._remove_stage)
         self._disable_table_scroll(self.settings_table)
+        self.settings_table.setItemDelegate(NumericItemDelegate(self._numeric_validator, self.settings_table))
 
         self.load_table = QTableWidget()
         self.load_table.setRowCount(2)
@@ -167,7 +187,7 @@ class SourceDataWidget(QWidget):
         self.sensitive_stage_combo.currentIndexChanged.connect(
             self._highlight_sensitive_stage
         )
-        self.ktc_secondary.textChanged.connect(self._update_delta_r_fw_rv)
+        self.ktc_secondary.currentTextChanged.connect(self._update_delta_r_fw_rv)
         self.settings_table.itemChanged.connect(self._on_settings_item_changed)
 
     def _engineering_settings_group(self) -> QGroupBox:
@@ -207,7 +227,9 @@ class SourceDataWidget(QWidget):
             self.rejection_factor,
             self.delta_r_fw_rv,
         ):
-            editor.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            if isinstance(editor, QLineEdit):
+                editor.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                editor.setValidator(self._numeric_validator)
         layout.addWidget(self.protection_type_label, 0, 0)
         layout.addWidget(self.protection_type_combo, 0, 1, 1, 5)
         layout.addWidget(self.sensitive_stage_label, 1, 0)
@@ -288,13 +310,12 @@ class SourceDataWidget(QWidget):
         self.ktn_primary_label.setText(t("source.ktn_primary"))
         self.ktn_secondary_label.setText(t("source.ktn_secondary"))
         self.ktc_primary.setPlaceholderText(t("source.placeholder_primary"))
-        self.ktc_secondary.setPlaceholderText(t("source.placeholder_secondary"))
         self.ktn_primary.setPlaceholderText(t("source.placeholder_primary"))
-        self.ktn_secondary.setPlaceholderText(t("source.placeholder_secondary"))
+        self.ktn_secondary.setPlaceholderText("0,1")
         self.ktc_primary_unit.setText(t("unit.ampere"))
         self.ktc_secondary_unit.setText(t("unit.ampere"))
-        self.ktn_primary_unit.setText(t("unit.volt"))
-        self.ktn_secondary_unit.setText(t("unit.volt"))
+        self.ktn_primary_unit.setText(t("unit.kilovolt"))
+        self.ktn_secondary_unit.setText(t("unit.kilovolt"))
         self.sensitivity_factor_label.setText(t("source.sensitivity_factor_psd"))
         self.phs_sensitivity_factor_label.setText(t("source.sensitivity_factor_phs"))
         self.max_psd_time_label.setText(t("source.max_psd_time"))
@@ -322,11 +343,11 @@ class SourceDataWidget(QWidget):
         self.clear_validation_errors()
         for editor in (
             self.ktc_primary,
-            self.ktc_secondary,
             self.ktn_primary,
-            self.ktn_secondary,
         ):
             editor.clear()
+        self.ktc_secondary.setCurrentText("1")
+        self.ktn_secondary.setText("0,1")
         self.sensitivity_factor.setText("1,10")
         self.phs_sensitivity_factor.setText("1,20")
         self.max_psd_time.setText("2,5")
@@ -358,7 +379,6 @@ class SourceDataWidget(QWidget):
     def clear_validation_errors(self) -> None:
         for editor in (
             self.ktc_primary,
-            self.ktc_secondary,
             self.ktn_primary,
             self.ktn_secondary,
             self.sensitivity_factor,
@@ -371,6 +391,10 @@ class SourceDataWidget(QWidget):
             editor.setToolTip("")
             editor.style().unpolish(editor)
             editor.style().polish(editor)
+        self.ktc_secondary.setProperty("invalid", False)
+        self.ktc_secondary.setToolTip("")
+        self.ktc_secondary.style().unpolish(self.ktc_secondary)
+        self.ktc_secondary.style().polish(self.ktc_secondary)
         self.sensitive_stage_combo.setProperty("invalid", False)
         self.sensitive_stage_combo.setToolTip("")
         self.sensitive_stage_combo.style().unpolish(self.sensitive_stage_combo)
@@ -395,7 +419,6 @@ class SourceDataWidget(QWidget):
             (self._translator.text("source.ktc_primary"), self.ktc_primary),
             (self._translator.text("source.ktc_secondary"), self.ktc_secondary),
             (self._translator.text("source.ktn_primary"), self.ktn_primary),
-            (self._translator.text("source.ktn_secondary"), self.ktn_secondary),
             (self._translator.text("source.delta_phi"), self.delta_phi),
             (self._translator.text("source.max_psd_time"), self.max_psd_time),
             (self._translator.text("source.rejection_factor"), self.rejection_factor),
@@ -529,9 +552,9 @@ class SourceDataWidget(QWidget):
             "protection_type": self.protection_type_combo.currentIndex(),
             "transformers": {
                 "ktc_primary": self.ktc_primary.text(),
-                "ktc_secondary": self.ktc_secondary.text(),
+                "ktc_secondary": self.ktc_secondary.currentText(),
                 "ktn_primary": self.ktn_primary.text(),
-                "ktn_secondary": self.ktn_secondary.text(),
+                "ktn_secondary": "0,1",
             },
             "sensitivity_factor": self.sensitivity_factor.text(),
             "psd_sensitivity_factor": self.sensitivity_factor.text(),
@@ -702,8 +725,12 @@ class SourceDataWidget(QWidget):
             "delta_r_primary": self.delta_r_primary_value(),
         }
 
-    def _line_number(self, editor: QLineEdit) -> float | None:
-        text = editor.text().strip().replace(",", ".")
+    def _line_number(self, editor: QLineEdit | QComboBox) -> float | None:
+        text = (
+            editor.currentText().strip().replace(",", ".")
+            if isinstance(editor, QComboBox)
+            else editor.text().strip().replace(",", ".")
+        )
         if not text:
             return None
         try:
@@ -741,9 +768,9 @@ class SourceDataWidget(QWidget):
         transformers = data.get("transformers", {})
         if isinstance(transformers, dict):
             self.ktc_primary.setText(str(transformers.get("ktc_primary", "")))
-            self.ktc_secondary.setText(str(transformers.get("ktc_secondary", "")))
+            self.ktc_secondary.setCurrentText(str(transformers.get("ktc_secondary", "1")))
             self.ktn_primary.setText(str(transformers.get("ktn_primary", "")))
-            self.ktn_secondary.setText(str(transformers.get("ktn_secondary", "")))
+            self.ktn_secondary.setText("0,1")
         self.sensitivity_factor.setText(
             str(data.get("psd_sensitivity_factor", data.get("sensitivity_factor", "1,10")))
         )
@@ -780,7 +807,7 @@ class SourceDataWidget(QWidget):
         self._set_sensitive_stage_column(self._pending_sensitive_stage_column)
 
     def _update_delta_r_fw_rv(self) -> None:
-        value = self.ktc_secondary.text().strip().replace(",", ".")
+        value = self.ktc_secondary.currentText().strip().replace(",", ".")
         if value == "5":
             self.delta_r_fw_rv.setText("1")
         elif value == "1":
@@ -879,9 +906,10 @@ class SourceDataWidget(QWidget):
         if phase_faults_only:
             self._copy_setting_row("X1", "X0")
             self._copy_setting_row("R1", "R0")
+            self._copy_setting_row("RPFF", "RFPE")
             self._copy_setting_row("TPP", "TPE")
 
-        for row_name in ("TPE", "X0", "R0"):
+        for row_name in ("TPE", "X0", "R0", "RFPE"):
             self._set_setting_row_locked(row_name, phase_faults_only)
         for row_name in ("ArgNegRes", "ArgDir", "Фл", "Флк"):
             self._set_setting_row_locked(row_name, True)
@@ -897,6 +925,8 @@ class SourceDataWidget(QWidget):
                 self._copy_setting_row("X1", "X0")
             elif item.row() == self._settings_rows.get("R1"):
                 self._copy_setting_row("R1", "R0")
+            elif item.row() == self._settings_rows.get("RPFF"):
+                self._copy_setting_row("RPFF", "RFPE")
             elif item.row() == self._settings_rows.get("TPP"):
                 self._copy_setting_row("TPP", "TPE")
         if item.row() in {
@@ -1155,6 +1185,10 @@ class SourceDataWidget(QWidget):
 
     def _configure_load_table(self) -> None:
         t = self._translator.text
+        numeric_delegate = NumericItemDelegate(self._numeric_validator, self.load_table)
+        self.load_table.setItemDelegateForColumn(1, numeric_delegate)
+        self.load_table.setItemDelegateForColumn(2, numeric_delegate)
+        self.load_table.setItemDelegateForColumn(3, numeric_delegate)
         self.load_table.setHorizontalHeaderLabels(
             [
                 t("source.direction"),

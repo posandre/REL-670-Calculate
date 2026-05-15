@@ -1333,7 +1333,10 @@ class MainWindow(QMainWindow):
             self.source_data_widget.delta_phi,
             self.source_data_widget.rejection_factor,
         ):
-            editor.textChanged.connect(self._mark_dirty)
+            if isinstance(editor, QComboBox):
+                editor.currentIndexChanged.connect(self._mark_dirty)
+            else:
+                editor.textChanged.connect(self._mark_dirty)
         self.source_data_widget.settings_table.itemChanged.connect(self._mark_dirty)
         self.source_data_widget.load_table.itemChanged.connect(self._mark_dirty)
 
@@ -4054,9 +4057,9 @@ class MainWindow(QMainWindow):
             [self._translator.text("source.protection_type"), protection_type, "-"],
             [self._translator.text("source.sensitive_stage"), sensitive_stage, "-"],
             [self._translator.text("source.ktc_primary"), widget.ktc_primary.text(), "A"],
-            [self._translator.text("source.ktc_secondary"), widget.ktc_secondary.text(), "A"],
-            [self._translator.text("source.ktn_primary"), widget.ktn_primary.text(), "В"],
-            [self._translator.text("source.ktn_secondary"), widget.ktn_secondary.text(), "В"],
+            [self._translator.text("source.ktc_secondary"), widget.ktc_secondary.currentText(), "A"],
+            [self._translator.text("source.ktn_primary"), widget.ktn_primary.text(), "кВ"],
+            [self._translator.text("source.ktn_secondary"), widget.ktn_secondary.text(), "кВ"],
             [self._translator.text("source.sensitivity_factor_psd"), self._report_optional_number(result.sensitivity_factor), "в.о."],
             [self._translator.text("source.sensitivity_factor_phs"), widget.phs_sensitivity_factor.text(), "в.о."],
             [self._translator.text("source.max_psd_time"), widget.max_psd_time.text(), "с"],
